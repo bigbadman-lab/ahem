@@ -394,4 +394,4 @@ The following are explicitly excluded from this architecture:
 - App Store distribution (architecture does not preclude it later; not in MVP scope)
 - Accounts, authentication, or subscription infrastructure
 
-Any proposal touching the above requires a new product version and revision of `PRODUCT.md` and `NON_NEGOTIABLES.md`.
+Any proposal touching the above requires a new product version and revision of `Docs/PRODUCT.md` and `Docs/NON_NEGOTIABLES.md`.
