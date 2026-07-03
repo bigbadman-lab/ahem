@@ -2,10 +2,15 @@ import SwiftUI
 
 @main
 struct AhemApp: App {
-    private let coordinator = AppCoordinator()
+    @StateObject private var appState: AppState
+    @StateObject private var coordinator: AppCoordinator
 
     init() {
-        coordinator.start()
+        let appState = AppState()
+        let coordinator = AppCoordinator(appState: appState)
+
+        _appState = StateObject(wrappedValue: appState)
+        _coordinator = StateObject(wrappedValue: coordinator)
     }
 
     var body: some Scene {

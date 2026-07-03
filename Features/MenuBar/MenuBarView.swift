@@ -4,10 +4,15 @@ struct MenuBarView: View {
     let coordinator: AppCoordinator
 
     var body: some View {
-        Text("Ahem is running.")
-        Divider()
-        Button("Quit") {
-            coordinator.quit()
+        Group {
+            Text("Ahem is running.")
+            Divider()
+            Button("Quit") {
+                coordinator.quit()
+            }
+        }
+        .onAppear {
+            coordinator.start()
         }
     }
 }
