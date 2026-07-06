@@ -9,6 +9,7 @@ final class AppCoordinator: ObservableObject {
     private let audioCaptureService = AudioCaptureService()
     private let panicFingerprintService = PanicFingerprintService()
     private let panicFingerprintStore = PanicFingerprintStore()
+    private let browserHidingService = BrowserHidingService()
 
     private var panicDetector: PanicDetector?
     private var didStart = false
@@ -151,9 +152,10 @@ final class AppCoordinator: ObservableObject {
     private func handlePanicDetected(confidence: Double) {
         guard appState.status == .listening || appState.status == .panicDetected else { return }
 
-        #if DEBUG
-        print("[Detection] Panic detected with confidence: \(String(format: "%.2f", confidence))")
-        #endif
+        print("[Panic] Detected with confidence: \(String(format: "%.2f", confidence))")
+
+        let hideResult = browserHidingService.hideActiveBrowserIfSupported()
+        logBrowserHidingResult(hideResult)
 
         detectionResetTask?.cancel()
         appState.status = .panicDetected
@@ -165,6 +167,19 @@ final class AppCoordinator: ObservableObject {
             if case .panicDetected = self.appState.status {
                 self.appState.status = .listening
             }
+        }
+    }
+
+    private func logBrowserHidingResult(_ result: BrowserHidingResult) {
+        switch result {
+        case .hidden(let bundleIdentifier, let localizedName):
+            print("[BrowserHiding] Hidden browser: \(localizedName) (\(bundleIdentifier))")
+        case .notBrowser(let bundleIdentifier, let localizedName):
+            print("[BrowserHiding] Frontmost app is not a supported browser: \(localizedName) (\(bundleIdentifier))")
+        case .noFrontmostApplication:
+            print("[BrowserHiding] No frontmost application")
+        case .failed(let bundleIdentifier, let localizedName):
+            print("[BrowserHiding] Failed to hide browser: \(localizedName) (\(bundleIdentifier))")
         }
     }
 
