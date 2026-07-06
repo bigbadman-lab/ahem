@@ -172,8 +172,13 @@ final class AppCoordinator: ObservableObject {
 
     private func logBrowserHidingResult(_ result: BrowserHidingResult) {
         switch result {
-        case .hidden(let bundleIdentifier, let localizedName):
-            print("[BrowserHiding] Hidden browser: \(localizedName) (\(bundleIdentifier))")
+        case .hidden(let bundleIdentifier, let localizedName, let confirmation):
+            switch confirmation {
+            case .hideReturnedTrue:
+                print("[BrowserHiding] Hidden browser: \(localizedName) (\(bundleIdentifier))")
+            case .isHiddenVerified:
+                print("[BrowserHiding] Hidden browser: \(localizedName) (\(bundleIdentifier)) — confirmed via isHidden (hide() returned false)")
+            }
         case .notBrowser(let bundleIdentifier, let localizedName):
             print("[BrowserHiding] Frontmost app is not a supported browser: \(localizedName) (\(bundleIdentifier))")
         case .noFrontmostApplication:
