@@ -83,7 +83,7 @@ struct PanicFingerprintService {
         guard paddedEnd > paddedStart else { return .noActiveRegion }
 
         let trimmed = Array(frames[paddedStart..<paddedEnd])
-        guard let features = extractFeatures(from: trimmed, sampleRate: sampleRate) else {
+        guard let features = extractTrainingSampleFeatures(from: trimmed, sampleRate: sampleRate) else {
             return .emptyBuffer
         }
 
@@ -108,6 +108,12 @@ struct PanicFingerprintService {
         let averagePeakPosition = samples.map(\.peakPosition).reduce(0, +) / Double(samples.count)
         let averageEnergyCentroid = samples.map(\.energyCentroid).reduce(0, +) / Double(samples.count)
         let averageEnvelopeBuckets = Self.averageEnvelopeBuckets(samples.map(\.envelopeBuckets))
+        let averageSpectralCentroid = samples.map(\.spectralCentroid).reduce(0, +) / Double(samples.count)
+        let averageSpectralRolloff = samples.map(\.spectralRolloff).reduce(0, +) / Double(samples.count)
+        let averageSpectralFlatness = samples.map(\.spectralFlatness).reduce(0, +) / Double(samples.count)
+        let averageSpectralFlux = samples.map(\.spectralFlux).reduce(0, +) / Double(samples.count)
+        let averageBandEnergies = Self.averageVectors(samples.map(\.bandEnergies))
+        let averageMfccSummary = Self.averageVectors(samples.map(\.mfccSummary))
 
         return PanicFingerprint(
             createdAt: Date(),
@@ -121,6 +127,12 @@ struct PanicFingerprintService {
             averagePeakPosition: averagePeakPosition,
             averageEnergyCentroid: averageEnergyCentroid,
             averageEnvelopeBuckets: averageEnvelopeBuckets,
+            averageSpectralCentroid: averageSpectralCentroid,
+            averageSpectralRolloff: averageSpectralRolloff,
+            averageSpectralFlatness: averageSpectralFlatness,
+            averageSpectralFlux: averageSpectralFlux,
+            averageBandEnergies: averageBandEnergies,
+            averageMfccSummary: averageMfccSummary,
             trainingConsistency: consistency,
             samples: samples
         )
@@ -183,7 +195,52 @@ struct PanicFingerprintService {
                 + "peakPosition: \(String(format: "%.2f", features.peakPosition)), "
                 + "envelope: [\(envelopeSummary)]"
         )
+        logSampleSpectralSummary(features, sampleIndex: sampleIndex)
         #endif
+    }
+
+    static func logSampleSpectralSummary(_ features: SampleFeatures, sampleIndex: Int) {
+        #if DEBUG
+        let bandSummary = features.bandEnergies
+            .map { String(format: "%.2f", $0) }
+            .joined(separator: ", ")
+        let mfccSummary = features.mfccSummary
+            .map { String(format: "%.1f", $0) }
+            .joined(separator: ", ")
+        print(
+            "[Training] Sample \(sampleIndex) spectral — "
+                + "centroid: \(String(format: "%.0f", features.spectralCentroid))Hz, "
+                + "rolloff: \(String(format: "%.0f", features.spectralRolloff))Hz, "
+                + "flatness: \(String(format: "%.2f", features.spectralFlatness)), "
+                + "flux: \(String(format: "%.2f", features.spectralFlux)), "
+                + "bands: [\(bandSummary)], "
+                + "mfccMean: [\(mfccSummary)]"
+        )
+        #endif
+    }
+
+    func extractTrainingSampleFeatures(from frames: [Float], sampleRate: Double) -> SampleFeatures? {
+        guard let baseFeatures = extractFeatures(from: frames, sampleRate: sampleRate) else { return nil }
+
+        let spectral = SpectralFeatureExtractor.extract(from: frames, sampleRate: sampleRate)
+        return SampleFeatures(
+            rms: baseFeatures.rms,
+            peak: baseFeatures.peak,
+            zeroCrossingRate: baseFeatures.zeroCrossingRate,
+            duration: baseFeatures.duration,
+            activeDuration: baseFeatures.activeDuration,
+            attackTime: baseFeatures.attackTime,
+            attackStrength: baseFeatures.attackStrength,
+            peakPosition: baseFeatures.peakPosition,
+            energyCentroid: baseFeatures.energyCentroid,
+            envelopeBuckets: baseFeatures.envelopeBuckets,
+            spectralCentroid: spectral.spectralCentroid,
+            spectralRolloff: spectral.spectralRolloff,
+            spectralFlatness: spectral.spectralFlatness,
+            spectralFlux: spectral.spectralFlux,
+            bandEnergies: spectral.bandEnergies,
+            mfccSummary: spectral.mfccSummary
+        )
     }
 
     static func extractFeatures(
@@ -397,18 +454,20 @@ struct PanicFingerprintService {
     }
 
     private static func averageEnvelopeBuckets(_ sampleBuckets: [[Double]]) -> [Double] {
-        guard let first = sampleBuckets.first, !first.isEmpty else {
-            return [Double](repeating: 0, count: envelopeBucketCount)
-        }
+        averageVectors(sampleBuckets)
+    }
+
+    private static func averageVectors(_ sampleVectors: [[Double]]) -> [Double] {
+        guard let first = sampleVectors.first, !first.isEmpty else { return [] }
 
         var averages = [Double](repeating: 0, count: first.count)
-        for buckets in sampleBuckets {
-            for index in averages.indices where index < buckets.count {
-                averages[index] += buckets[index]
+        for vector in sampleVectors {
+            for index in averages.indices where index < vector.count {
+                averages[index] += vector[index]
             }
         }
 
-        let count = Double(sampleBuckets.count)
+        let count = Double(sampleVectors.count)
         return averages.map { $0 / count }
     }
 
