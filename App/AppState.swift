@@ -6,6 +6,9 @@ enum AppStatus: Equatable {
     case listening
     case microphonePermissionDenied
     case audioError(String)
+    case training(sample: Int, total: Int)
+    case trainingComplete
+    case trainingFailed(String)
 }
 
 extension AppStatus {
@@ -21,6 +24,21 @@ extension AppStatus {
             return "Microphone Permission Denied"
         case .audioError:
             return "Audio Error"
+        case .training(let sample, let total):
+            return "Training \(sample)/\(total)"
+        case .trainingComplete:
+            return "Training Complete"
+        case .trainingFailed:
+            return "Training Failed"
+        }
+    }
+
+    var isTrainingSessionActive: Bool {
+        switch self {
+        case .training, .trainingComplete:
+            return true
+        default:
+            return false
         }
     }
 }

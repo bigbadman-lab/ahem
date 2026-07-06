@@ -13,6 +13,11 @@ struct MenuBarView: View {
         Group {
             Text(appState.status.menuBarLabel)
             Divider()
+            Button("Train Panic Signal") {
+                coordinator.startTraining()
+            }
+            .disabled(coordinator.isTrainingSessionActive)
+            Divider()
             Button("Quit") {
                 coordinator.quit()
             }

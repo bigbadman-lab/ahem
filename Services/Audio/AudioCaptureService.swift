@@ -30,6 +30,16 @@ final class AudioCaptureService {
     private var bufferCount = 0
     private var lastLogDate: Date?
 
+    var isCapturing: Bool {
+        isTapInstalled && engine.isRunning
+    }
+
+    var inputSampleRate: Double? {
+        guard isTapInstalled else { return nil }
+        let sampleRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
+        return sampleRate > 0 ? sampleRate : nil
+    }
+
     static func currentPermissionStatus() -> MicrophonePermissionStatus {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized:
