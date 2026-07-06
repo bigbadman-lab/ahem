@@ -59,8 +59,8 @@ struct PanicFingerprintService {
         flux: 0.05
     )
 
-    static let heuristicConfidenceWeight = 0.70
-    static let spectralConfidenceWeight = 0.30
+    static let heuristicConfidenceWeight = 0.80
+    static let spectralConfidenceWeight = 0.20
     static let spectralCalibrationBaseline = 0.55
     static let spectralCalibrationRange = 0.45
 
