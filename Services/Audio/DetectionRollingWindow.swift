@@ -26,27 +26,13 @@ final class DetectionRollingWindow {
     }
 
     func append(buffer: AVAudioPCMBuffer) {
-        lock.lock()
-        defer { lock.unlock() }
+        let analysisFrames = captureAnalysisFrames(from: buffer)
+        guard let analysisFrames else { return }
 
-        guard let channelData = buffer.floatChannelData else { return }
-
-        let frameLength = Int(buffer.frameLength)
-        guard frameLength > 0 else { return }
-
-        frames.append(contentsOf: UnsafeBufferPointer(start: channelData[0], count: frameLength))
-
-        if frames.count > maxFrameCount {
-            frames.removeFirst(frames.count - maxFrameCount)
-        }
-
-        let now = CFAbsoluteTimeGetCurrent()
-        guard now - lastAnalysisTime >= analysisInterval else { return }
-        guard frames.count >= minFrameCount else { return }
-
-        lastAnalysisTime = now
-
-        guard let features = featureService.extractLiveSampleFeatures(from: frames, sampleRate: sampleRate) else {
+        guard let features = featureService.extractLiveSampleFeatures(
+            from: analysisFrames,
+            sampleRate: sampleRate
+        ) else {
             return
         }
 
@@ -58,5 +44,28 @@ final class DetectionRollingWindow {
         defer { lock.unlock() }
         frames.removeAll(keepingCapacity: true)
         lastAnalysisTime = 0
+    }
+
+    private func captureAnalysisFrames(from buffer: AVAudioPCMBuffer) -> [Float]? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let channelData = buffer.floatChannelData else { return nil }
+
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else { return nil }
+
+        frames.append(contentsOf: UnsafeBufferPointer(start: channelData[0], count: frameLength))
+
+        if frames.count > maxFrameCount {
+            frames.removeFirst(frames.count - maxFrameCount)
+        }
+
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastAnalysisTime >= analysisInterval else { return nil }
+        guard frames.count >= minFrameCount else { return nil }
+
+        lastAnalysisTime = now
+        return frames
     }
 }

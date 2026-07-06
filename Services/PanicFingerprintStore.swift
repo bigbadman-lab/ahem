@@ -8,6 +8,13 @@ final class PanicFingerprintStore {
         self.defaults = defaults
     }
 
+    var hasStoredData: Bool {
+        guard let data = defaults.data(forKey: storageKey), !data.isEmpty else {
+            return false
+        }
+        return true
+    }
+
     var hasFingerprint: Bool {
         load() != nil
     }

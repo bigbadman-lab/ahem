@@ -10,6 +10,11 @@ final class AppCoordinator: ObservableObject {
     private let panicFingerprintService = PanicFingerprintService()
     private let panicFingerprintStore = PanicFingerprintStore()
     private let browserHidingService = BrowserHidingService()
+    private let audioPipeline = AudioPipeline()
+    private let audioProcessingQueue = DispatchQueue(
+        label: "com.getahem.audio-processing",
+        qos: .userInitiated
+    )
 
     private var panicDetector: PanicDetector?
     private var didStart = false
@@ -28,8 +33,22 @@ final class AppCoordinator: ObservableObject {
 
     init(appState: AppState) {
         self.appState = appState
+
+        #if DEBUG
+        print("[Startup] AppCoordinator init")
+        #endif
+
+        audioPipeline.onTrainingBuffer = { [weak self] buffer in
+            Task { @MainActor in
+                self?.updateTrainingInputLevel(from: buffer)
+            }
+        }
+
         audioCaptureService.onBuffer = { [weak self] buffer in
-            self?.handleAudioBuffer(buffer)
+            guard let self else { return }
+            self.audioProcessingQueue.async {
+                self.audioPipeline.process(buffer)
+            }
         }
     }
 
@@ -38,7 +57,7 @@ final class AppCoordinator: ObservableObject {
     }
 
     var hasStoredFingerprint: Bool {
-        panicFingerprintStore.hasFingerprint
+        panicFingerprintStore.hasStoredData
     }
 
     func prepareTrainingUI() {
@@ -53,6 +72,11 @@ final class AppCoordinator: ObservableObject {
     func start() {
         guard !didStart else { return }
         didStart = true
+
+        #if DEBUG
+        print("[Startup] App launch started")
+        #endif
+
         NSApplication.shared.setActivationPolicy(.accessory)
 
         Task {
@@ -85,6 +109,8 @@ final class AppCoordinator: ObservableObject {
         }
 
         panicDetector?.stop()
+        panicDetector = nil
+        audioPipeline.setDetector(nil)
 
         #if DEBUG
         print("[Training] Detection paused")
@@ -106,11 +132,16 @@ final class AppCoordinator: ObservableObject {
         isTraining = false
         panicDetector?.stop()
         panicDetector = nil
+        audioPipeline.setDetector(nil)
         audioCaptureService.stopCapture()
         NSApplication.shared.terminate(nil)
     }
 
     private func beginAudioCapture() async {
+        #if DEBUG
+        print("[Startup] Checking microphone permission")
+        #endif
+
         switch AudioCaptureService.currentPermissionStatus() {
         case .notDetermined:
             appState.status = .microphonePermissionNeeded
@@ -122,6 +153,9 @@ final class AppCoordinator: ObservableObject {
 
         case .denied:
             appState.status = .microphonePermissionDenied
+            #if DEBUG
+            print("[Startup] Startup failed: microphone permission denied")
+            #endif
         }
     }
 
@@ -131,18 +165,30 @@ final class AppCoordinator: ObservableObject {
             startCapture()
         case .denied:
             appState.status = .microphonePermissionDenied
+            #if DEBUG
+            print("[Startup] Startup failed: microphone permission denied")
+            #endif
         case .notDetermined:
             appState.status = .microphonePermissionNeeded
         }
     }
 
     private func startCapture() {
+        #if DEBUG
+        print("[Startup] Starting audio capture")
+        #endif
+
         do {
             try audioCaptureService.startCapture()
-            appState.status = .listening
             configureDetection()
+            #if DEBUG
+            print("[Startup] Startup complete")
+            #endif
         } catch {
             appState.status = .audioError(error.localizedDescription)
+            #if DEBUG
+            print("[Startup] Startup failed: \(error.localizedDescription)")
+            #endif
         }
     }
 
@@ -156,20 +202,35 @@ final class AppCoordinator: ObservableObject {
 
         panicDetector?.stop()
         panicDetector = nil
+        audioPipeline.setDetector(nil)
+
+        #if DEBUG
+        print("[Startup] Loading stored fingerprint")
+        #endif
 
         guard let fingerprint = panicFingerprintStore.load() else {
+            appState.status = .needsTraining
             #if DEBUG
-            print("[Detection] No stored fingerprint — detection inactive")
+            print("[Startup] No stored fingerprint — detection inactive")
             #endif
             return
         }
 
+        #if DEBUG
+        print("[Startup] Stored fingerprint loaded")
+        #endif
+
         guard let sampleRate = audioCaptureService.inputSampleRate else {
+            appState.status = .audioError("Microphone input is unavailable.")
             #if DEBUG
-            print("[Detection] Stored fingerprint loaded but microphone input is unavailable")
+            print("[Startup] Startup failed: microphone input unavailable")
             #endif
             return
         }
+
+        #if DEBUG
+        print("[Startup] Starting detection")
+        #endif
 
         let detector = PanicDetector(fingerprint: fingerprint)
         detector.onMatch = { [weak self] result in
@@ -179,9 +240,11 @@ final class AppCoordinator: ObservableObject {
         }
         detector.start(sampleRate: sampleRate)
         panicDetector = detector
+        audioPipeline.setDetector(detector)
+        appState.status = .listening
 
         #if DEBUG
-        print("[Detection] Stored fingerprint loaded — detection active")
+        print("[Startup] Detection started")
         #endif
     }
 
@@ -227,6 +290,7 @@ final class AppCoordinator: ObservableObject {
     private func runTrainingSession() async {
         defer {
             activeSampleCollector = nil
+            audioPipeline.setSampleCollector(nil)
             isTraining = false
             trainingTask = nil
             configureDetection()
@@ -410,10 +474,12 @@ final class AppCoordinator: ObservableObject {
                 duration: trainingRecordingWindowSeconds
             ) { [weak self] frames in
                 self?.activeSampleCollector = nil
+                self?.audioPipeline.setSampleCollector(nil)
                 resumeGuard.resumeOnce(returning: frames, continuation: continuation)
             }
 
             activeSampleCollector = collector
+            audioPipeline.setSampleCollector(collector)
         }
 
         print("[Training] Sample recording finished (sample \(sampleIndex)/3)")
@@ -442,21 +508,6 @@ final class AppCoordinator: ObservableObject {
             )
             return .features(features)
         }
-    }
-
-    private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard buffer.frameLength > 0,
-              buffer.floatChannelData != nil else {
-            return
-        }
-
-        if activeSampleCollector != nil {
-            updateTrainingInputLevel(from: buffer)
-            activeSampleCollector?.append(buffer: buffer)
-            return
-        }
-
-        panicDetector?.process(buffer: buffer)
     }
 
     private func updateTrainingInputLevel(from buffer: AVAudioPCMBuffer) {

@@ -17,6 +17,7 @@ enum AppStatus: Equatable {
     case listening
     case microphonePermissionDenied
     case audioError(String)
+    case needsTraining
     case training(sample: Int, total: Int)
     case trainingComplete
     case trainingFailed(String)
@@ -32,6 +33,8 @@ extension AppStatus {
             return "Microphone Permission Needed"
         case .listening, .panicDetected:
             return "Listening"
+        case .needsTraining:
+            return "Training Needed"
         case .microphonePermissionDenied:
             return "Microphone Permission Denied"
         case .audioError:

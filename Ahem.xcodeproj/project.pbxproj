@@ -22,6 +22,7 @@
 		A1B2C3D4010000000000000E /* BrowserHidingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000000E /* BrowserHidingService.swift */; };
 		A1B2C3D4010000000000000F /* SpectralFeatureExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000000F /* SpectralFeatureExtractor.swift */; };
 		A1B2C3D40100000000000010 /* TrainingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000010 /* TrainingView.swift */; };
+		A1B2C3D40100000000000011 /* AudioPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000011 /* AudioPipeline.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -40,6 +41,7 @@
 		A1B2C3D4020000000000000E /* BrowserHidingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserHidingService.swift; sourceTree = "<group>"; };
 		A1B2C3D4020000000000000F /* SpectralFeatureExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpectralFeatureExtractor.swift; sourceTree = "<group>"; };
 		A1B2C3D40200000000000010 /* TrainingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingView.swift; sourceTree = "<group>"; };
+		A1B2C3D40200000000000011 /* AudioPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPipeline.swift; sourceTree = "<group>"; };
 		A1B2C3D40300000000000001 /* Ahem.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ahem.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -144,6 +146,7 @@
 				A1B2C3D4020000000000000B /* PanicDetector.swift */,
 				A1B2C3D4020000000000000C /* DetectionRollingWindow.swift */,
 				A1B2C3D4020000000000000F /* SpectralFeatureExtractor.swift */,
+				A1B2C3D40200000000000011 /* AudioPipeline.swift */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -220,6 +223,7 @@
 				A1B2C3D4010000000000000E /* BrowserHidingService.swift in Sources */,
 				A1B2C3D4010000000000000F /* SpectralFeatureExtractor.swift in Sources */,
 				A1B2C3D40100000000000010 /* TrainingView.swift in Sources */,
+				A1B2C3D40100000000000011 /* AudioPipeline.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

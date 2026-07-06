@@ -87,22 +87,26 @@ final class PanicDetector {
     }
 
     func stop() {
-        stateLock.lock()
-        defer { stateLock.unlock() }
+        let windowToReset: DetectionRollingWindow?
 
+        stateLock.lock()
         guard isActive || rollingWindow != nil else {
+            stateLock.unlock()
             #if DEBUG
             print("[Detection] Already stopped — stop ignored")
             #endif
             return
         }
 
-        rollingWindow?.reset()
+        windowToReset = rollingWindow
         rollingWindow = nil
         isActive = false
         confidenceHistory.removeAll(keepingCapacity: true)
         noiseFloorHistory.removeAll(keepingCapacity: true)
         noiseFloorRMS = PanicFingerprintService.minimumRMS
+        stateLock.unlock()
+
+        windowToReset?.reset()
     }
 
     func process(buffer: AVAudioPCMBuffer) {
