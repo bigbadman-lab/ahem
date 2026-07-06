@@ -46,7 +46,7 @@ final class DetectionRollingWindow {
 
         lastAnalysisTime = now
 
-        guard let features = featureService.extractFeatures(from: frames, sampleRate: sampleRate) else {
+        guard let features = featureService.extractLiveSampleFeatures(from: frames, sampleRate: sampleRate) else {
             return
         }
 

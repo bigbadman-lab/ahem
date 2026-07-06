@@ -32,6 +32,15 @@ struct SampleFeatures: Codable, Equatable {
             && spectralFlux.isFinite
     }
 
+    var hasCompleteSpectralFeatures: Bool {
+        bandEnergies.count == Self.bandEnergyCount
+            && mfccSummary.count == Self.mfccCoefficientCount
+            && spectralCentroid.isFinite
+            && spectralRolloff.isFinite
+            && spectralFlatness.isFinite
+            && spectralFlux.isFinite
+    }
+
     init(
         rms: Double,
         peak: Double,
@@ -134,6 +143,12 @@ struct PanicFingerprint: Codable, Equatable {
 
     var isDetectionCompatible: Bool {
         version >= Self.currentVersion && samples.allSatisfy(\.isComplete)
+    }
+
+    var hasCompleteSpectralProfile: Bool {
+        profileSample.hasCompleteSpectralFeatures
+            && averageBandEnergies.count == SampleFeatures.bandEnergyCount
+            && averageMfccSummary.count == SampleFeatures.mfccCoefficientCount
     }
 
     var profileSample: SampleFeatures {

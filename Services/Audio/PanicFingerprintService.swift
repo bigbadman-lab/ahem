@@ -1,6 +1,13 @@
 import AVFoundation
 import Foundation
 
+struct DetectionConfidenceBreakdown {
+    let heuristic: Double
+    let spectral: Double
+    let spectralRaw: Double
+    let final: Double
+}
+
 enum PanicFingerprintError: LocalizedError {
     case emptyBuffer
     case invalidSampleCount
@@ -42,6 +49,20 @@ struct PanicFingerprintService {
         energyCentroid: 0.10,
         envelope: 0.15
     )
+
+    private static let spectralSimilarityWeights = (
+        mfcc: 0.45,
+        bands: 0.25,
+        centroid: 0.10,
+        rolloff: 0.10,
+        flatness: 0.05,
+        flux: 0.05
+    )
+
+    static let heuristicConfidenceWeight = 0.70
+    static let spectralConfidenceWeight = 0.30
+    static let spectralCalibrationBaseline = 0.55
+    static let spectralCalibrationRange = 0.45
 
     func extractFeatures(from buffer: AVAudioPCMBuffer) -> SampleFeatures? {
         guard let channelData = buffer.floatChannelData else { return nil }
@@ -143,11 +164,55 @@ struct PanicFingerprintService {
     }
 
     func computeConfidence(live: SampleFeatures, fingerprint: PanicFingerprint) -> Double {
-        var best = Self.featureSimilarity(live: live, reference: fingerprint.profileSample)
+        computeBlendedConfidence(live: live, fingerprint: fingerprint)?.final ?? 0
+    }
+
+    func computeHeuristicConfidence(live: SampleFeatures, fingerprint: PanicFingerprint) -> Double {
+        var best = Self.heuristicFeatureSimilarity(live: live, reference: fingerprint.profileSample)
         for sample in fingerprint.samples {
-            best = max(best, Self.featureSimilarity(live: live, reference: sample))
+            best = max(best, Self.heuristicFeatureSimilarity(live: live, reference: sample))
         }
-        return min(1.0, max(0.0, best))
+        return Self.clampScore(best)
+    }
+
+    func computeRawSpectralSimilarity(live: SampleFeatures, fingerprint: PanicFingerprint) -> Double {
+        guard fingerprint.hasCompleteSpectralProfile else { return 0 }
+
+        var best = Self.spectralFeatureSimilarity(live: live, reference: fingerprint.profileSample)
+        for sample in fingerprint.samples where sample.hasCompleteSpectralFeatures {
+            best = max(best, Self.spectralFeatureSimilarity(live: live, reference: sample))
+        }
+        return Self.clampScore(best)
+    }
+
+    func computeSpectralSimilarity(live: SampleFeatures, fingerprint: PanicFingerprint) -> Double {
+        Self.calibrateSpectralScore(computeRawSpectralSimilarity(live: live, fingerprint: fingerprint))
+    }
+
+    func computeBlendedConfidence(
+        live: SampleFeatures,
+        fingerprint: PanicFingerprint
+    ) -> DetectionConfidenceBreakdown? {
+        guard fingerprint.hasCompleteSpectralProfile else {
+            #if DEBUG
+            print("[Detection] Fingerprint spectral profile incomplete — retraining required")
+            #endif
+            return nil
+        }
+
+        let heuristic = computeHeuristicConfidence(live: live, fingerprint: fingerprint)
+        let spectralRaw = computeRawSpectralSimilarity(live: live, fingerprint: fingerprint)
+        let spectral = Self.calibrateSpectralScore(spectralRaw)
+        let final = Self.clampScore(
+            (heuristic * Self.heuristicConfidenceWeight) + (spectral * Self.spectralConfidenceWeight)
+        )
+
+        return DetectionConfidenceBreakdown(
+            heuristic: heuristic,
+            spectral: spectral,
+            spectralRaw: spectralRaw,
+            final: final
+        )
     }
 
     func passesPeakSanityCheck(
@@ -166,8 +231,8 @@ struct PanicFingerprintService {
     @discardableResult
     func validateTrainingConsistency(_ samples: [SampleFeatures]) throws -> Double {
         let pairwise = Self.pairwiseSimilarities(samples)
-        let average = pairwise.reduce(0, +) / Double(pairwise.count)
-        let minimum = pairwise.min() ?? 0
+        let average = Self.clampScore(pairwise.reduce(0, +) / Double(pairwise.count))
+        let minimum = Self.clampScore(pairwise.min() ?? 0)
 
         #if DEBUG
         print("[Training] Pairwise similarities: \(pairwise.map { String(format: "%.2f", $0) }.joined(separator: ", "))")
@@ -217,6 +282,10 @@ struct PanicFingerprintService {
                 + "mfccMean: [\(mfccSummary)]"
         )
         #endif
+    }
+
+    func extractLiveSampleFeatures(from frames: [Float], sampleRate: Double) -> SampleFeatures? {
+        extractTrainingSampleFeatures(from: frames, sampleRate: sampleRate)
     }
 
     func extractTrainingSampleFeatures(from frames: [Float], sampleRate: Double) -> SampleFeatures? {
@@ -294,7 +363,7 @@ struct PanicFingerprintService {
         )
     }
 
-    static func featureSimilarity(live: SampleFeatures, reference: SampleFeatures) -> Double {
+    static func heuristicFeatureSimilarity(live: SampleFeatures, reference: SampleFeatures) -> Double {
         let weights = confidenceWeights
 
         let rmsSimilarity = ratioSimilarity(live.rms, reference.rms)
@@ -306,14 +375,42 @@ struct PanicFingerprintService {
         let energyCentroidSimilarity = positionSimilarity(live.energyCentroid, reference.energyCentroid)
         let envelopeSimilarity = envelopeShapeSimilarity(live.envelopeBuckets, reference.envelopeBuckets)
 
-        return (weights.rms * rmsSimilarity)
-            + (weights.peak * peakSimilarity)
-            + (weights.zeroCrossing * zeroCrossingSimilarity)
-            + (weights.activeDuration * activeDurationSimilarity)
-            + (weights.attackStrength * attackStrengthSimilarity)
-            + (weights.peakPosition * peakPositionSimilarity)
-            + (weights.energyCentroid * energyCentroidSimilarity)
-            + (weights.envelope * envelopeSimilarity)
+        return clampScore(
+            (weights.rms * rmsSimilarity)
+                + (weights.peak * peakSimilarity)
+                + (weights.zeroCrossing * zeroCrossingSimilarity)
+                + (weights.activeDuration * activeDurationSimilarity)
+                + (weights.attackStrength * attackStrengthSimilarity)
+                + (weights.peakPosition * peakPositionSimilarity)
+                + (weights.energyCentroid * energyCentroidSimilarity)
+                + (weights.envelope * envelopeSimilarity)
+        )
+    }
+
+    static func spectralFeatureSimilarity(live: SampleFeatures, reference: SampleFeatures) -> Double {
+        guard live.hasCompleteSpectralFeatures, reference.hasCompleteSpectralFeatures else { return 0 }
+
+        let weights = spectralSimilarityWeights
+
+        let centroidSimilarity = ratioSimilarity(live.spectralCentroid, reference.spectralCentroid, floor: 1)
+        let rolloffSimilarity = ratioSimilarity(live.spectralRolloff, reference.spectralRolloff, floor: 1)
+        let flatnessSimilarity = normalizedValueSimilarity(live.spectralFlatness, reference.spectralFlatness)
+        let fluxSimilarity = normalizedValueSimilarity(live.spectralFlux, reference.spectralFlux)
+        let bandSimilarity = vectorRatioSimilarity(live.bandEnergies, reference.bandEnergies)
+        let mfccSimilarity = cosineSimilarity(live.mfccSummary, reference.mfccSummary)
+
+        return clampScore(
+            (weights.mfcc * mfccSimilarity)
+                + (weights.bands * bandSimilarity)
+                + (weights.centroid * centroidSimilarity)
+                + (weights.rolloff * rolloffSimilarity)
+                + (weights.flatness * flatnessSimilarity)
+                + (weights.flux * fluxSimilarity)
+        )
+    }
+
+    static func featureSimilarity(live: SampleFeatures, reference: SampleFeatures) -> Double {
+        clampScore(heuristicFeatureSimilarity(live: live, reference: reference))
     }
 
     private static func activeEnergyThreshold(maxEnergy: Double) -> Double {
@@ -477,7 +574,7 @@ struct PanicFingerprintService {
         var similarities: [Double] = []
         for left in 0..<(samples.count - 1) {
             for right in (left + 1)..<samples.count {
-                similarities.append(featureSimilarity(live: samples[left], reference: samples[right]))
+                similarities.append(clampScore(featureSimilarity(live: samples[left], reference: samples[right])))
             }
         }
         return similarities
@@ -490,17 +587,66 @@ struct PanicFingerprintService {
         for index in live.indices {
             total += ratioSimilarity(live[index], reference[index], floor: 0.0001)
         }
-        return total / Double(live.count)
+        return clampScore(total / Double(live.count))
     }
 
     private static func positionSimilarity(_ live: Double, _ reference: Double) -> Double {
         let difference = abs(live - reference)
-        return max(0, 1.0 - difference)
+        return clampScore(1.0 - difference)
+    }
+
+    static func calibrateSpectralScore(_ rawSpectral: Double) -> Double {
+        let clampedRaw = clampScore(rawSpectral)
+        return clampScore((clampedRaw - spectralCalibrationBaseline) / spectralCalibrationRange)
     }
 
     static func ratioSimilarity(_ live: Double, _ reference: Double, floor: Double = 0.0001) -> Double {
-        let maximum = max(live, reference, floor)
-        let minimum = min(live, reference)
-        return minimum / maximum
+        let safeLive = live.isFinite ? live : 0
+        let safeReference = reference.isFinite ? reference : 0
+        let maximum = max(safeLive, safeReference, floor)
+        let minimum = min(safeLive, safeReference)
+        return clampScore(minimum / maximum)
+    }
+
+    static func clampScore(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return min(1, max(0, value))
+    }
+
+    private static func normalizedValueSimilarity(_ live: Double, _ reference: Double) -> Double {
+        let safeLive = live.isFinite ? live : 0
+        let safeReference = reference.isFinite ? reference : 0
+        return clampScore(1.0 - abs(safeLive - safeReference))
+    }
+
+    private static func vectorRatioSimilarity(_ live: [Double], _ reference: [Double]) -> Double {
+        guard live.count == reference.count, !live.isEmpty else { return 0 }
+
+        var total = 0.0
+        for index in live.indices {
+            total += ratioSimilarity(live[index], reference[index], floor: 0.0001)
+        }
+        return clampScore(total / Double(live.count))
+    }
+
+    private static func cosineSimilarity(_ live: [Double], _ reference: [Double]) -> Double {
+        guard live.count == reference.count, !live.isEmpty else { return 0 }
+
+        var dotProduct = 0.0
+        var liveMagnitudeSquared = 0.0
+        var referenceMagnitudeSquared = 0.0
+
+        for index in live.indices {
+            let liveValue = live[index].isFinite ? live[index] : 0
+            let referenceValue = reference[index].isFinite ? reference[index] : 0
+            dotProduct += liveValue * referenceValue
+            liveMagnitudeSquared += liveValue * liveValue
+            referenceMagnitudeSquared += referenceValue * referenceValue
+        }
+
+        guard liveMagnitudeSquared > 0, referenceMagnitudeSquared > 0 else { return 0 }
+
+        let cosine = dotProduct / (sqrt(liveMagnitudeSquared) * sqrt(referenceMagnitudeSquared))
+        return clampScore(cosine)
     }
 }

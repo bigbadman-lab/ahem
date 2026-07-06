@@ -102,14 +102,21 @@ final class PanicDetector {
             return
         }
 
-        let instantaneousConfidence = fingerprintService.computeConfidence(live: live, fingerprint: fingerprint)
+        guard let breakdown = fingerprintService.computeBlendedConfidence(live: live, fingerprint: fingerprint) else {
+            stateLock.lock()
+            confidenceHistory.removeAll(keepingCapacity: true)
+            stateLock.unlock()
+            return
+        }
 
         stateLock.lock()
-        confidenceHistory.append(instantaneousConfidence)
+        confidenceHistory.append(breakdown.final)
         if confidenceHistory.count > config.confidenceHistorySize {
             confidenceHistory.removeFirst(confidenceHistory.count - config.confidenceHistorySize)
         }
-        let smoothedConfidence = confidenceHistory.reduce(0, +) / Double(confidenceHistory.count)
+        let smoothedConfidence = PanicFingerprintService.clampScore(
+            confidenceHistory.reduce(0, +) / Double(confidenceHistory.count)
+        )
         let currentNoiseFloor = noiseFloorRMS
         stateLock.unlock()
 
@@ -121,9 +128,9 @@ final class PanicDetector {
         let passesNoiseFloor = live.rms >= currentNoiseFloor * config.noiseFloorMultiplier
         let qualifies = passesPeakSanity
             && passesNoiseFloor
-            && instantaneousConfidence >= config.threshold
+            && breakdown.final >= config.threshold
 
-        if instantaneousConfidence < config.threshold {
+        if breakdown.final < config.threshold {
             updateNoiseFloor(with: live.rms)
         }
 
@@ -139,7 +146,7 @@ final class PanicDetector {
         let fired = qualifies && !inCooldown
 
         logAnalysisIfNeeded(
-            instantaneous: instantaneousConfidence,
+            breakdown: breakdown,
             smoothed: smoothedConfidence,
             threshold: config.threshold,
             noiseFloor: currentNoiseFloor,
@@ -151,10 +158,12 @@ final class PanicDetector {
                 #if DEBUG
                 print(
                     "[Detection] Cooldown active — suppressing match "
-                        + "(instantaneous: \(formatConfidence(instantaneousConfidence)), "
-                        + "smoothed: \(formatConfidence(smoothedConfidence)), "
-                        + "threshold: \(formatConfidence(config.threshold)), "
-                        + "fired: false)"
+                        + formatDetectionSummary(
+                            breakdown: breakdown,
+                            smoothed: smoothedConfidence,
+                            threshold: config.threshold,
+                            fired: false
+                        )
                 )
                 #endif
             }
@@ -171,15 +180,17 @@ final class PanicDetector {
         #if DEBUG
         print(
             "[Detection] Panic detection "
-                + "(instantaneous: \(formatConfidence(instantaneousConfidence)), "
-                + "smoothed: \(formatConfidence(smoothedConfidence)), "
-                + "threshold: \(formatConfidence(config.threshold)), "
-                + "fired: true)"
+                + formatDetectionSummary(
+                    breakdown: breakdown,
+                    smoothed: smoothedConfidence,
+                    threshold: config.threshold,
+                    fired: true
+                )
         )
         #endif
 
         let result = PanicDetectionResult(
-            confidence: instantaneousConfidence,
+            confidence: breakdown.final,
             isMatch: true,
             timestamp: Date()
         )
@@ -203,7 +214,7 @@ final class PanicDetector {
     }
 
     private func logAnalysisIfNeeded(
-        instantaneous: Double,
+        breakdown: DetectionConfidenceBreakdown,
         smoothed: Double,
         threshold: Double,
         noiseFloor: Double,
@@ -221,16 +232,39 @@ final class PanicDetector {
         stateLock.unlock()
 
         print(
-            "[Detection] instantaneous: \(formatConfidence(instantaneous)), "
+            "[Detection] heuristic: \(formatConfidence(breakdown.heuristic)), "
+                + "spectral: \(formatConfidence(breakdown.spectral)), "
+                + "final: \(formatConfidence(breakdown.final)), "
                 + "smoothed: \(formatConfidence(smoothed)), "
                 + "threshold: \(formatConfidence(threshold)), "
                 + "noiseFloor: \(String(format: "%.4f", noiseFloor)), "
                 + "fired: \(fired)"
         )
+
+        if breakdown.spectralRaw != breakdown.spectral {
+            print(
+                "[Detection] spectral raw: \(formatConfidence(breakdown.spectralRaw)), "
+                    + "calibrated: \(formatConfidence(breakdown.spectral))"
+            )
+        }
         #endif
     }
 
+    private func formatDetectionSummary(
+        breakdown: DetectionConfidenceBreakdown,
+        smoothed: Double,
+        threshold: Double,
+        fired: Bool
+    ) -> String {
+        "(heuristic: \(formatConfidence(breakdown.heuristic)), "
+            + "spectral: \(formatConfidence(breakdown.spectral)), "
+            + "final: \(formatConfidence(breakdown.final)), "
+            + "smoothed: \(formatConfidence(smoothed)), "
+            + "threshold: \(formatConfidence(threshold)), "
+            + "fired: \(fired))"
+    }
+
     private func formatConfidence(_ confidence: Double) -> String {
-        String(format: "%.2f", confidence)
+        String(format: "%.2f", PanicFingerprintService.clampScore(confidence))
     }
 }
