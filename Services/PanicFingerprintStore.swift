@@ -79,6 +79,10 @@ final class PanicFingerprintStore {
         return fingerprint
     }
 
+    func lastTrainedDate() -> Date? {
+        load()?.createdAt
+    }
+
     func delete() {
         defaults.removeObject(forKey: storageKey)
     }

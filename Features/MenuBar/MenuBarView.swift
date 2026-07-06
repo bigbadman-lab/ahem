@@ -12,25 +12,97 @@ struct MenuBarView: View {
         _appState = ObservedObject(wrappedValue: coordinator.appState)
     }
 
-    private var trainButtonTitle: String {
-        coordinator.hasStoredFingerprint ? "Train Again" : "Train Panic Signal"
+    private var presentation: MenuBarPresentation {
+        appState.status.menuPresentation(
+            hasFingerprint: coordinator.hasStoredFingerprint,
+            isTrainingSessionActive: coordinator.isTrainingSessionActive
+        )
     }
 
     var body: some View {
         Group {
-            Text(appState.status.menuBarLabel)
-            Divider()
-            Button(trainButtonTitle) {
-                presentTraining()
+            statusSection
+
+            if presentation.showsLastTrained, let lastTrainedAt = appState.lastTrainedAt {
+                lastTrainedSection(date: lastTrainedAt)
             }
-            .disabled(coordinator.isTrainingSessionActive)
+
             Divider()
+
+            primaryActionSection
+            secondaryActionsSection
+
+            Divider()
+
             Button("Quit") {
                 coordinator.quit()
             }
         }
         .onAppear {
             coordinator.start()
+        }
+    }
+
+    @ViewBuilder
+    private var statusSection: some View {
+        Text(presentation.statusLine)
+            .font(.headline)
+            .padding(.bottom, 4)
+    }
+
+    @ViewBuilder
+    private func lastTrainedSection(date: Date) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Last trained")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 4) {
+                Text(date.formatted(.relative(presentation: .named, unitsStyle: .wide)))
+                Text("•")
+                    .foregroundStyle(.secondary)
+                Text(date.formatted(date: .omitted, time: .shortened))
+            }
+            .font(.subheadline)
+        }
+        .padding(.bottom, 4)
+    }
+
+    @ViewBuilder
+    private var primaryActionSection: some View {
+        if let primaryAction = presentation.primaryAction {
+            Button(presentation.primaryActionTitle) {
+                performPrimaryAction(primaryAction)
+            }
+            .disabled(coordinator.isTrainingSessionActive)
+        }
+    }
+
+    @ViewBuilder
+    private var secondaryActionsSection: some View {
+        if presentation.showsListeningToggle {
+            Button(presentation.listeningToggleTitle) {
+                coordinator.pauseListening()
+            }
+            .disabled(coordinator.isTrainingSessionActive)
+        }
+
+        Button("Preferences…") {
+            // Milestone 9: menu placeholder only
+        }
+
+        Button("About Ahem") {
+            // Milestone 9: menu placeholder only
+        }
+    }
+
+    private func performPrimaryAction(_ action: MenuBarPrimaryAction) {
+        switch action {
+        case .trainPanicCough, .trainAgain:
+            presentTraining()
+        case .resumeListening:
+            coordinator.resumeListening()
+        case .grantMicrophonePermission:
+            coordinator.requestMicrophonePermission()
         }
     }
 

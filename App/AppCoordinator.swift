@@ -69,6 +69,32 @@ final class AppCoordinator: ObservableObject {
         appState.trainingUIPhase = .idle
     }
 
+    func pauseListening() {
+        guard appState.status == .listening || appState.status == .panicDetected else { return }
+
+        detectionResetTask?.cancel()
+        detectionResetTask = nil
+        panicDetector?.stop()
+        panicDetector = nil
+        audioPipeline.setDetector(nil)
+        appState.status = .paused
+    }
+
+    func resumeListening() {
+        guard appState.status == .paused else { return }
+        configureDetection()
+    }
+
+    func requestMicrophonePermission() {
+        Task {
+            await beginAudioCapture()
+        }
+    }
+
+    func refreshLastTrainedDate() {
+        appState.lastTrainedAt = panicFingerprintStore.lastTrainedDate()
+    }
+
     func start() {
         guard !didStart else { return }
         didStart = true
@@ -81,6 +107,7 @@ final class AppCoordinator: ObservableObject {
 
         Task {
             await beginAudioCapture()
+            refreshLastTrainedDate()
         }
     }
 
@@ -210,11 +237,14 @@ final class AppCoordinator: ObservableObject {
 
         guard let fingerprint = panicFingerprintStore.load() else {
             appState.status = .needsTraining
+            appState.lastTrainedAt = nil
             #if DEBUG
             print("[Startup] No stored fingerprint — detection inactive")
             #endif
             return
         }
+
+        appState.lastTrainedAt = fingerprint.createdAt
 
         #if DEBUG
         print("[Startup] Stored fingerprint loaded")
@@ -339,6 +369,7 @@ final class AppCoordinator: ObservableObject {
             let fingerprint = try panicFingerprintService.combine(samples: collectedSamples)
             try panicFingerprintStore.save(fingerprint)
             appState.status = .trainingComplete
+            appState.lastTrainedAt = fingerprint.createdAt
             appState.trainingUIPhase = .succeeded
 
             #if DEBUG
