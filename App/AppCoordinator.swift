@@ -19,6 +19,7 @@ final class AppCoordinator: ObservableObject {
     private var detectionResetTask: Task<Void, Never>?
 
     private let sampleDuration: TimeInterval = 1.0
+    private let trainingGetReadyDelay: TimeInterval = 1.0
     private let trainingCompleteDisplayDuration: TimeInterval = 2.0
     private let panicDetectedDisplayDuration: TimeInterval = 1.0
 
@@ -61,6 +62,10 @@ final class AppCoordinator: ObservableObject {
         }
 
         panicDetector?.stop()
+
+        #if DEBUG
+        print("[Training] Detection paused")
+        #endif
 
         isTraining = true
         trainingTask = Task { [weak self] in
@@ -194,12 +199,19 @@ final class AppCoordinator: ObservableObject {
             isTraining = false
             trainingTask = nil
             configureDetection()
+            #if DEBUG
+            print("[Training] Detection resumed")
+            #endif
         }
 
         guard let sampleRate = audioCaptureService.inputSampleRate else {
             appState.status = .trainingFailed("Microphone input is unavailable.")
             return
         }
+
+        #if DEBUG
+        print("[Training] Training started")
+        #endif
 
         var collectedSamples: [SampleFeatures] = []
 
@@ -208,15 +220,33 @@ final class AppCoordinator: ObservableObject {
 
             appState.status = .training(sample: sampleIndex, total: 3)
 
-            guard let features = await captureSample(sampleRate: sampleRate) else {
+            #if DEBUG
+            print("[Training] Sample \(sampleIndex)/3 started")
+            #endif
+
+            guard let features = await captureSample(sampleRate: sampleRate, sampleIndex: sampleIndex) else {
+                #if DEBUG
+                print("[Training] Sample \(sampleIndex)/3 rejected — could not capture audio")
+                #endif
                 appState.status = .trainingFailed("Could not capture sample \(sampleIndex).")
                 return
             }
 
+            #if DEBUG
+            print("[Training] Sample RMS: \(String(format: "%.4f", features.rms))")
+            #endif
+
             guard panicFingerprintService.isUsableSample(features) else {
+                #if DEBUG
+                print("[Training] Sample \(sampleIndex)/3 rejected — RMS below minimum threshold")
+                #endif
                 appState.status = .trainingFailed("Sample \(sampleIndex) was too quiet. Make your panic signal clearly.")
                 return
             }
+
+            #if DEBUG
+            print("[Training] Sample \(sampleIndex)/3 accepted")
+            #endif
 
             collectedSamples.append(features)
         }
@@ -227,9 +257,13 @@ final class AppCoordinator: ObservableObject {
             appState.status = .trainingComplete
 
             #if DEBUG
+            print("[Training] Training completed")
             print("[Training] Saved panic fingerprint with averageRMS: \(fingerprint.averageRMS)")
             #endif
         } catch {
+            #if DEBUG
+            print("[Training] Training failed — \(error.localizedDescription)")
+            #endif
             appState.status = .trainingFailed(error.localizedDescription)
             return
         }
@@ -240,8 +274,20 @@ final class AppCoordinator: ObservableObject {
         appState.status = .listening
     }
 
-    private func captureSample(sampleRate: Double) async -> SampleFeatures? {
-        await withCheckedContinuation { continuation in
+    private func captureSample(sampleRate: Double, sampleIndex: Int) async -> SampleFeatures? {
+        #if DEBUG
+        print("[Training] Get ready delay started (sample \(sampleIndex)/3)")
+        #endif
+
+        try? await Task.sleep(for: .seconds(trainingGetReadyDelay))
+        if Task.isCancelled { return nil }
+
+        #if DEBUG
+        print("[Training] Get ready delay finished (sample \(sampleIndex)/3)")
+        print("[Training] Sample recording began (sample \(sampleIndex)/3)")
+        #endif
+
+        let features = await withCheckedContinuation { continuation in
             let collector = TrainingSampleCollector(
                 sampleRate: sampleRate,
                 duration: sampleDuration
@@ -252,6 +298,12 @@ final class AppCoordinator: ObservableObject {
 
             activeSampleCollector = collector
         }
+
+        #if DEBUG
+        print("[Training] Sample recording finished (sample \(sampleIndex)/3)")
+        #endif
+
+        return features
     }
 
     private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer) {
