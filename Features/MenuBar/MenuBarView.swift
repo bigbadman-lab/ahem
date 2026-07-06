@@ -87,11 +87,11 @@ struct MenuBarView: View {
         }
 
         Button("Preferences…") {
-            // Milestone 9: menu placeholder only
+            presentPreferences()
         }
 
         Button("About Ahem") {
-            // Milestone 9: menu placeholder only
+            presentAbout()
         }
     }
 
@@ -110,5 +110,15 @@ struct MenuBarView: View {
         NSApp.activate(ignoringOtherApps: true)
         coordinator.prepareTrainingUI()
         openWindow(id: TrainingWindowID.value)
+    }
+
+    private func presentPreferences() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: PreferencesWindowID.value)
+    }
+
+    private func presentAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        openWindow(id: AboutWindowID.value)
     }
 }

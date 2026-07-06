@@ -23,6 +23,12 @@
 		A1B2C3D4010000000000000F /* SpectralFeatureExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000000F /* SpectralFeatureExtractor.swift */; };
 		A1B2C3D40100000000000010 /* TrainingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000010 /* TrainingView.swift */; };
 		A1B2C3D40100000000000011 /* AudioPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000011 /* AudioPipeline.swift */; };
+		A1B2C3D40100000000000012 /* PreferencesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000012 /* PreferencesView.swift */; };
+		A1B2C3D40100000000000013 /* UserPreferencesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000013 /* UserPreferencesStore.swift */; };
+		A1B2C3D40100000000000014 /* LaunchAtLoginService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000014 /* LaunchAtLoginService.swift */; };
+		A1B2C3D40100000000000015 /* TrainingConfirmationSound.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000015 /* TrainingConfirmationSound.swift */; };
+		A1B2C3D40100000000000016 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000016 /* AboutView.swift */; };
+		A1B2C3D40100000000000017 /* AboutLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000017 /* AboutLinks.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,6 +48,12 @@
 		A1B2C3D4020000000000000F /* SpectralFeatureExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpectralFeatureExtractor.swift; sourceTree = "<group>"; };
 		A1B2C3D40200000000000010 /* TrainingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingView.swift; sourceTree = "<group>"; };
 		A1B2C3D40200000000000011 /* AudioPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPipeline.swift; sourceTree = "<group>"; };
+		A1B2C3D40200000000000012 /* PreferencesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesView.swift; sourceTree = "<group>"; };
+		A1B2C3D40200000000000013 /* UserPreferencesStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserPreferencesStore.swift; sourceTree = "<group>"; };
+		A1B2C3D40200000000000014 /* LaunchAtLoginService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchAtLoginService.swift; sourceTree = "<group>"; };
+		A1B2C3D40200000000000015 /* TrainingConfirmationSound.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingConfirmationSound.swift; sourceTree = "<group>"; };
+		A1B2C3D40200000000000016 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
+		A1B2C3D40200000000000017 /* AboutLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutLinks.swift; sourceTree = "<group>"; };
 		A1B2C3D40300000000000001 /* Ahem.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ahem.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -83,6 +95,8 @@
 			children = (
 				A1B2C3D40500000000000009 /* MenuBar */,
 				A1B2C3D4050000000000000B /* Training */,
+				A1B2C3D4050000000000000C /* Preferences */,
+				A1B2C3D4050000000000000D /* About */,
 			);
 			path = Features;
 			sourceTree = "<group>";
@@ -93,6 +107,9 @@
 				A1B2C3D4050000000000000A /* Audio */,
 				A1B2C3D4020000000000000A /* PanicFingerprintStore.swift */,
 				A1B2C3D4020000000000000E /* BrowserHidingService.swift */,
+				A1B2C3D40200000000000013 /* UserPreferencesStore.swift */,
+				A1B2C3D40200000000000014 /* LaunchAtLoginService.swift */,
+				A1B2C3D40200000000000015 /* TrainingConfirmationSound.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -135,6 +152,23 @@
 				A1B2C3D40200000000000010 /* TrainingView.swift */,
 			);
 			path = Training;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4050000000000000C /* Preferences */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D40200000000000012 /* PreferencesView.swift */,
+			);
+			path = Preferences;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4050000000000000D /* About */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D40200000000000016 /* AboutView.swift */,
+				A1B2C3D40200000000000017 /* AboutLinks.swift */,
+			);
+			path = About;
 			sourceTree = "<group>";
 		};
 		A1B2C3D4050000000000000A /* Audio */ = {
@@ -224,6 +258,12 @@
 				A1B2C3D4010000000000000F /* SpectralFeatureExtractor.swift in Sources */,
 				A1B2C3D40100000000000010 /* TrainingView.swift in Sources */,
 				A1B2C3D40100000000000011 /* AudioPipeline.swift in Sources */,
+				A1B2C3D40100000000000012 /* PreferencesView.swift in Sources */,
+				A1B2C3D40100000000000013 /* UserPreferencesStore.swift in Sources */,
+				A1B2C3D40100000000000014 /* LaunchAtLoginService.swift in Sources */,
+				A1B2C3D40100000000000015 /* TrainingConfirmationSound.swift in Sources */,
+				A1B2C3D40100000000000016 /* AboutView.swift in Sources */,
+				A1B2C3D40100000000000017 /* AboutLinks.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

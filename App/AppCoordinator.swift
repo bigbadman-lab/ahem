@@ -10,6 +10,8 @@ final class AppCoordinator: ObservableObject {
     private let panicFingerprintService = PanicFingerprintService()
     private let panicFingerprintStore = PanicFingerprintStore()
     private let browserHidingService = BrowserHidingService()
+    private let launchAtLoginService = LaunchAtLoginService()
+    let preferences = UserPreferencesStore()
     private let audioPipeline = AudioPipeline()
     private let audioProcessingQueue = DispatchQueue(
         label: "com.getahem.audio-processing",
@@ -58,6 +60,19 @@ final class AppCoordinator: ObservableObject {
 
     var hasStoredFingerprint: Bool {
         panicFingerprintStore.hasStoredData
+    }
+
+    var isLaunchAtLoginEnabled: Bool {
+        launchAtLoginService.isEnabled
+    }
+
+    func setLaunchAtLoginEnabled(_ enabled: Bool) throws {
+        try launchAtLoginService.setEnabled(enabled)
+    }
+
+    func playTrainingConfirmationSoundIfEnabled() {
+        guard preferences.playConfirmationSoundAfterTraining else { return }
+        TrainingConfirmationSound.play()
     }
 
     func prepareTrainingUI() {
@@ -371,6 +386,7 @@ final class AppCoordinator: ObservableObject {
             appState.status = .trainingComplete
             appState.lastTrainedAt = fingerprint.createdAt
             appState.trainingUIPhase = .succeeded
+            playTrainingConfirmationSoundIfEnabled()
 
             #if DEBUG
             print("[Training] Training completed")

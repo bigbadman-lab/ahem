@@ -23,5 +23,15 @@ struct AhemApp: App {
             TrainingView(coordinator: coordinator)
         }
         .defaultSize(width: 400, height: 460)
+
+        Window("Preferences", id: PreferencesWindowID.value) {
+            PreferencesView(coordinator: coordinator)
+        }
+        .defaultSize(width: 420, height: 220)
+
+        Window("About Ahem", id: AboutWindowID.value) {
+            AboutView()
+        }
+        .defaultSize(width: 360, height: 420)
     }
 }
