@@ -9,7 +9,9 @@ final class TrainingSampleCollector {
     private var isComplete = false
 
     init(sampleRate: Double, duration: TimeInterval, onComplete: @escaping ([Float]) -> Void) {
-        self.targetFrameCount = max(1, Int(sampleRate * duration))
+        let safeSampleRate = sampleRate.isFinite && sampleRate > 0 ? sampleRate : 44_100
+        let safeDuration = duration.isFinite && duration > 0 ? duration : 1
+        self.targetFrameCount = max(1, Int(safeSampleRate * safeDuration))
         self.onComplete = onComplete
     }
 

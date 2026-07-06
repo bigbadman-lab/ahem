@@ -50,6 +50,20 @@ final class PanicDetector {
         stateLock.lock()
         defer { stateLock.unlock() }
 
+        guard sampleRate.isFinite, sampleRate > 0 else {
+            #if DEBUG
+            print("[Detection] Start ignored — invalid sample rate")
+            #endif
+            return
+        }
+
+        if isActive {
+            #if DEBUG
+            print("[Detection] Already active — start ignored")
+            #endif
+            return
+        }
+
         rollingWindow = DetectionRollingWindow(
             sampleRate: sampleRate,
             windowDuration: config.windowDuration,
@@ -75,6 +89,13 @@ final class PanicDetector {
     func stop() {
         stateLock.lock()
         defer { stateLock.unlock() }
+
+        guard isActive || rollingWindow != nil else {
+            #if DEBUG
+            print("[Detection] Already stopped — stop ignored")
+            #endif
+            return
+        }
 
         rollingWindow?.reset()
         rollingWindow = nil

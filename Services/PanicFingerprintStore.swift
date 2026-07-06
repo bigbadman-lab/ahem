@@ -13,24 +13,51 @@ final class PanicFingerprintStore {
     }
 
     func save(_ fingerprint: PanicFingerprint) throws {
-        let data = try JSONEncoder().encode(fingerprint)
-        defaults.set(data, forKey: storageKey)
+        do {
+            let data = try JSONEncoder().encode(fingerprint)
+            defaults.set(data, forKey: storageKey)
+        } catch {
+            #if DEBUG
+            print("[Training] Failed to save fingerprint: \(error.localizedDescription)")
+            #endif
+            throw error
+        }
     }
 
     func load() -> PanicFingerprint? {
-        guard let data = defaults.data(forKey: storageKey) else { return nil }
-        guard let fingerprint = try? JSONDecoder().decode(PanicFingerprint.self, from: data) else {
+        guard let data = defaults.data(forKey: storageKey), !data.isEmpty else {
+            return nil
+        }
+
+        let fingerprint: PanicFingerprint
+        do {
+            fingerprint = try JSONDecoder().decode(PanicFingerprint.self, from: data)
+        } catch {
             #if DEBUG
-            print("[Training] Stored fingerprint could not be decoded — retraining required")
+            print("[Detection] Stored fingerprint could not be decoded — retraining required")
+            #endif
+            return nil
+        }
+
+        guard fingerprint.version >= PanicFingerprint.currentVersion else {
+            #if DEBUG
+            print(
+                "[Detection] Legacy fingerprint v\(fingerprint.version) is incompatible — retraining required"
+            )
             #endif
             return nil
         }
 
         guard fingerprint.isDetectionCompatible else {
             #if DEBUG
-            print(
-                "[Training] Legacy fingerprint v\(fingerprint.version) is incompatible — retraining required"
-            )
+            print("[Detection] Stored fingerprint is incomplete — retraining required")
+            #endif
+            return nil
+        }
+
+        guard fingerprint.hasCompleteSpectralProfile else {
+            #if DEBUG
+            print("[Detection] Stored fingerprint is incomplete — retraining required")
             #endif
             return nil
         }

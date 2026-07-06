@@ -47,7 +47,12 @@ final class AppCoordinator: ObservableObject {
     }
 
     func startTraining() {
-        guard !isTraining else { return }
+        guard !isTraining else {
+            #if DEBUG
+            print("[Training] Training already in progress — request ignored")
+            #endif
+            return
+        }
 
         guard AudioCaptureService.currentPermissionStatus() == .granted else {
             appState.status = .microphonePermissionDenied
@@ -69,6 +74,7 @@ final class AppCoordinator: ObservableObject {
         print("[Training] Detection paused")
         #endif
 
+        trainingTask?.cancel()
         isTraining = true
         trainingTask = Task { [weak self] in
             await self?.runTrainingSession()
@@ -125,6 +131,13 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func configureDetection() {
+        guard !isTraining else {
+            #if DEBUG
+            print("[Detection] Resume skipped — training still active")
+            #endif
+            return
+        }
+
         panicDetector?.stop()
         panicDetector = nil
 
@@ -346,12 +359,26 @@ final class AppCoordinator: ObservableObject {
         print("[Training] Sample recording began (sample \(sampleIndex)/3)")
 
         let capturedFrames = await withCheckedContinuation { continuation in
+            final class ResumeGuard: @unchecked Sendable {
+                private let lock = NSLock()
+                private var didResume = false
+
+                func resumeOnce(returning frames: [Float], continuation: CheckedContinuation<[Float], Never>) {
+                    lock.lock()
+                    defer { lock.unlock() }
+                    guard !didResume else { return }
+                    didResume = true
+                    continuation.resume(returning: frames)
+                }
+            }
+
+            let resumeGuard = ResumeGuard()
             let collector = TrainingSampleCollector(
                 sampleRate: sampleRate,
                 duration: trainingRecordingWindowSeconds
             ) { [weak self] frames in
                 self?.activeSampleCollector = nil
-                continuation.resume(returning: frames)
+                resumeGuard.resumeOnce(returning: frames, continuation: continuation)
             }
 
             activeSampleCollector = collector
@@ -385,6 +412,11 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard buffer.frameLength > 0,
+              buffer.floatChannelData != nil else {
+            return
+        }
+
         if activeSampleCollector != nil {
             activeSampleCollector?.append(buffer: buffer)
             return

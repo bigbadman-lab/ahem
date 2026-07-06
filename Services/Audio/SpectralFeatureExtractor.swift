@@ -21,7 +21,9 @@ enum SpectralFeatureExtractor {
     private static let bandEdgesHz: [Double] = [0, 300, 800, 2_000, 5_000, 20_000]
 
     static func extract(from samples: [Float], sampleRate: Double) -> SpectralFeatures {
-        guard !samples.isEmpty, sampleRate > 0 else {
+        guard !samples.isEmpty,
+              sampleRate.isFinite,
+              sampleRate > 0 else {
             return emptyFeatures()
         }
 
@@ -60,7 +62,7 @@ enum SpectralFeatureExtractor {
             }
 
             let mfcc = mfccCoefficients(magnitudes: magnitudes, sampleRate: sampleRate)
-            for index in mfccSum.indices {
+            for index in mfccSum.indices where index < mfcc.count {
                 mfccSum[index] += mfcc[index]
             }
 
@@ -78,9 +80,31 @@ enum SpectralFeatureExtractor {
             spectralRolloff: safe(spectralRolloff: rolloffSum / frameCount),
             spectralFlatness: safe(spectralFlatness: flatnessSum / frameCount),
             spectralFlux: safe(spectralFlux: fluxSum / max(frameCount - 1, 1)),
-            bandEnergies: normalizedBands,
-            mfccSummary: mfccSum.map { safe(mfcc: $0 / frameCount) }
+            bandEnergies: sanitizeBandEnergies(normalizedBands),
+            mfccSummary: sanitizeMfccSummary(mfccSum.map { safe(mfcc: $0 / frameCount) })
         )
+    }
+
+    private static func sanitizeBandEnergies(_ energies: [Double]) -> [Double] {
+        var sanitized = [Double](repeating: 0, count: bandCount)
+        for index in sanitized.indices where index < energies.count {
+            let value = energies[index]
+            sanitized[index] = value.isFinite ? max(0, value) : 0
+        }
+
+        let total = sanitized.reduce(0, +)
+        guard total > 0 else {
+            return [Double](repeating: 1.0 / Double(bandCount), count: bandCount)
+        }
+        return sanitized.map { $0 / total }
+    }
+
+    private static func sanitizeMfccSummary(_ coefficients: [Double]) -> [Double] {
+        var sanitized = [Double](repeating: 0, count: mfccCoefficientCount)
+        for index in sanitized.indices where index < coefficients.count {
+            sanitized[index] = safe(mfcc: coefficients[index])
+        }
+        return sanitized
     }
 
     private static func framedSamples(_ samples: [Float]) -> [[Float]] {
@@ -119,8 +143,12 @@ enum SpectralFeatureExtractor {
     }
 
     private static func magnitudeSpectrum(frame: [Float]) -> [Double] {
+        guard frame.count >= fftSize else { return [] }
+
         let log2n = vDSP_Length(log2(Double(fftSize)))
-        guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
+        guard log2n > 0,
+              (1 << log2n) == fftSize,
+              let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
             return []
         }
         defer { vDSP_destroy_fftsetup(setup) }
@@ -134,19 +162,29 @@ enum SpectralFeatureExtractor {
         var real = [Float](repeating: 0, count: fftSize / 2)
         var imag = [Float](repeating: 0, count: fftSize / 2)
 
-        input.withUnsafeBufferPointer { buffer in
-            buffer.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: fftSize / 2) { complexPointer in
+        let transformed: Bool = input.withUnsafeBufferPointer { buffer in
+            guard let inputBase = buffer.baseAddress else { return false }
+
+            return inputBase.withMemoryRebound(to: DSPComplex.self, capacity: fftSize / 2) { complexPointer in
                 var split = DSPSplitComplex(realp: &real, imagp: &imag)
                 vDSP_ctoz(complexPointer, 2, &split, 1, vDSP_Length(fftSize / 2))
+
+                return real.withUnsafeMutableBufferPointer { realPointer in
+                    imag.withUnsafeMutableBufferPointer { imagPointer in
+                        guard let realBase = realPointer.baseAddress,
+                              let imagBase = imagPointer.baseAddress else {
+                            return false
+                        }
+
+                        var fftSplit = DSPSplitComplex(realp: realBase, imagp: imagBase)
+                        vDSP_fft_zrip(setup, &fftSplit, 1, log2n, FFTDirection(FFT_FORWARD))
+                        return true
+                    }
+                }
             }
         }
 
-        real.withUnsafeMutableBufferPointer { realPointer in
-            imag.withUnsafeMutableBufferPointer { imagPointer in
-                var split = DSPSplitComplex(realp: realPointer.baseAddress!, imagp: imagPointer.baseAddress!)
-                vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
-            }
-        }
+        guard transformed else { return [] }
 
         var scale = Float(1.0 / (Float(fftSize) * 2))
         vDSP_vsmul(real, 1, &scale, &real, 1, vDSP_Length(real.count))
@@ -156,7 +194,8 @@ enum SpectralFeatureExtractor {
         for index in 0..<magnitudes.count {
             let re = Double(real[index])
             let im = Double(imag[index])
-            magnitudes[index] = sqrt((re * re) + (im * im))
+            let magnitude = sqrt((re * re) + (im * im))
+            magnitudes[index] = magnitude.isFinite ? magnitude : 0
         }
         return magnitudes
     }
@@ -232,8 +271,13 @@ enum SpectralFeatureExtractor {
     }
 
     private static func bandIndex(for frequency: Double, sampleRate: Double) -> Int? {
+        guard frequency.isFinite, sampleRate.isFinite, sampleRate > 0 else { return nil }
+
         let nyquist = sampleRate / 2
+        guard nyquist > 0 else { return nil }
+
         let edges = bandEdgesHz.map { min($0, nyquist) }
+        guard edges.count >= 2 else { return nil }
         guard frequency >= edges[0], frequency <= edges[edges.count - 1] else { return nil }
 
         for index in 0..<(edges.count - 1) {
@@ -273,9 +317,22 @@ enum SpectralFeatureExtractor {
     }
 
     private static func melFilterbankEnergies(magnitudes: [Double], sampleRate: Double) -> [Double] {
+        guard !magnitudes.isEmpty,
+              sampleRate.isFinite,
+              sampleRate > 0 else {
+            return [Double](repeating: 0, count: melFilterCount)
+        }
+
         let nyquist = sampleRate / 2
+        guard nyquist > 0 else {
+            return [Double](repeating: 0, count: melFilterCount)
+        }
+
         let minMel = hzToMel(0)
         let maxMel = hzToMel(nyquist)
+        guard maxMel.isFinite, maxMel > minMel else {
+            return [Double](repeating: 0, count: melFilterCount)
+        }
         let melPoints = (0..<(melFilterCount + 2)).map { index in
             melToHz(minMel + (Double(index) * (maxMel - minMel) / Double(melFilterCount + 1)))
         }

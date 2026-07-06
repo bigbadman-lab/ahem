@@ -37,7 +37,8 @@ final class AudioCaptureService {
     var inputSampleRate: Double? {
         guard isTapInstalled else { return nil }
         let sampleRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
-        return sampleRate > 0 ? sampleRate : nil
+        guard sampleRate.isFinite, sampleRate > 0 else { return nil }
+        return sampleRate
     }
 
     static func currentPermissionStatus() -> MicrophonePermissionStatus {
@@ -59,11 +60,29 @@ final class AudioCaptureService {
     }
 
     func startCapture() throws {
-        guard !isTapInstalled else { return }
+        if isTapInstalled && engine.isRunning {
+            #if DEBUG
+            print("[AudioCapture] Audio engine already running — start ignored")
+            #endif
+            return
+        }
+
+        if isTapInstalled {
+            removeTapIfNeeded()
+        }
+
+        #if DEBUG
+        print("[AudioCapture] Starting audio engine")
+        #endif
 
         let inputNode = engine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
-        guard format.sampleRate > 0 else {
+        guard format.sampleRate.isFinite,
+              format.sampleRate > 0,
+              format.channelCount > 0 else {
+            #if DEBUG
+            print("[AudioCapture] Invalid input format — sampleRate: \(format.sampleRate), channels: \(format.channelCount)")
+            #endif
             throw AudioCaptureError.invalidInputFormat
         }
 
@@ -73,29 +92,58 @@ final class AudioCaptureService {
         isTapInstalled = true
 
         do {
+            engine.prepare()
             try engine.start()
         } catch {
             removeTapIfNeeded()
+            #if DEBUG
+            print("[AudioCapture] Failed to start audio engine: \(error.localizedDescription)")
+            #endif
             throw AudioCaptureError.engineStartFailed(underlying: error)
         }
+
+        #if DEBUG
+        print("[AudioCapture] Audio engine started")
+        #endif
     }
 
     func stopCapture() {
+        guard isTapInstalled || engine.isRunning else {
+            #if DEBUG
+            print("[AudioCapture] Audio engine already stopped — stop ignored")
+            #endif
+            return
+        }
+
+        #if DEBUG
+        print("[AudioCapture] Stopping audio engine")
+        #endif
+
         removeTapIfNeeded()
         if engine.isRunning {
             engine.stop()
         }
         bufferCount = 0
         lastLogDate = nil
+
+        #if DEBUG
+        print("[AudioCapture] Audio engine stopped")
+        #endif
     }
 
     private func removeTapIfNeeded() {
         guard isTapInstalled else { return }
+
         engine.inputNode.removeTap(onBus: 0)
         isTapInstalled = false
     }
 
     private func handleBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard buffer.frameLength > 0,
+              buffer.floatChannelData != nil else {
+            return
+        }
+
         bufferCount += 1
         logBufferActivity(frameLength: buffer.frameLength)
         onBuffer?(buffer)
@@ -103,7 +151,7 @@ final class AudioCaptureService {
 
     private func logBufferActivity(frameLength: AVAudioFrameCount) {
         let now = Date()
-        guard lastLogDate == nil || now.timeIntervalSince(lastLogDate!) >= logInterval else {
+        if let lastLogDate, now.timeIntervalSince(lastLogDate) < logInterval {
             return
         }
         lastLogDate = now
