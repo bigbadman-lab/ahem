@@ -17,6 +17,7 @@ final class AppCoordinator: ObservableObject {
     private var trainingTask: Task<Void, Never>?
     private var activeSampleCollector: TrainingSampleCollector?
     private var detectionResetTask: Task<Void, Never>?
+    private var trainingInputLevelSmoothed: Double = 0
 
     private let trainingRecordingWindowSeconds: TimeInterval = 5.0
     private let trainingCountdownSeconds = 5
@@ -34,6 +35,19 @@ final class AppCoordinator: ObservableObject {
 
     var isTrainingSessionActive: Bool {
         isTraining || appState.status.isTrainingSessionActive
+    }
+
+    var hasStoredFingerprint: Bool {
+        panicFingerprintStore.hasFingerprint
+    }
+
+    func prepareTrainingUI() {
+        appState.trainingUIPhase = .welcome
+    }
+
+    func dismissTrainingUI() {
+        resetTrainingInputLevel()
+        appState.trainingUIPhase = .idle
     }
 
     func start() {
@@ -56,6 +70,7 @@ final class AppCoordinator: ObservableObject {
 
         guard AudioCaptureService.currentPermissionStatus() == .granted else {
             appState.status = .microphonePermissionDenied
+            appState.trainingUIPhase = .failed("Microphone permission is required to train your panic cough.")
             return
         }
 
@@ -64,6 +79,7 @@ final class AppCoordinator: ObservableObject {
                 try audioCaptureService.startCapture()
             } catch {
                 appState.status = .audioError(error.localizedDescription)
+                appState.trainingUIPhase = .failed(error.localizedDescription)
                 return
             }
         }
@@ -220,7 +236,7 @@ final class AppCoordinator: ObservableObject {
         }
 
         guard let sampleRate = audioCaptureService.inputSampleRate else {
-            appState.status = .trainingFailed("Microphone input is unavailable.")
+            failTraining("Microphone input is unavailable.")
             return
         }
 
@@ -249,6 +265,7 @@ final class AppCoordinator: ObservableObject {
             collectedSamples.append(features)
 
             if sampleIndex < 3 {
+                appState.trainingUIPhase = .preparingNextSample(completedSample: sampleIndex, total: 3)
                 try? await Task.sleep(for: .seconds(trainingInterSamplePause))
                 if Task.isCancelled { return }
             }
@@ -258,6 +275,7 @@ final class AppCoordinator: ObservableObject {
             let fingerprint = try panicFingerprintService.combine(samples: collectedSamples)
             try panicFingerprintStore.save(fingerprint)
             appState.status = .trainingComplete
+            appState.trainingUIPhase = .succeeded
 
             #if DEBUG
             print("[Training] Training completed")
@@ -271,14 +289,20 @@ final class AppCoordinator: ObservableObject {
             #if DEBUG
             print("[Training] Training failed — \(error.localizedDescription)")
             #endif
-            appState.status = .trainingFailed(error.localizedDescription)
+            failTraining(error.localizedDescription)
             return
         }
 
         try? await Task.sleep(for: .seconds(trainingCompleteDisplayDuration))
         guard !Task.isCancelled else { return }
 
+        appState.trainingUIPhase = .succeededListeningActive
         appState.status = .listening
+    }
+
+    private func failTraining(_ message: String) {
+        appState.status = .trainingFailed(message)
+        appState.trainingUIPhase = .failed(message)
     }
 
     private enum TrainingCaptureResult {
@@ -301,12 +325,12 @@ final class AppCoordinator: ObservableObject {
                 #if DEBUG
                 print("[Training] Sample \(sampleIndex)/3 rejected — could not capture audio")
                 #endif
-                appState.status = .trainingFailed("Could not capture sample \(sampleIndex).")
+                failTraining("Could not capture sample \(sampleIndex).")
                 return nil
 
             case .noActiveRegion:
                 if quietRetries >= maxQuietSampleRetriesPerSample {
-                    appState.status = .trainingFailed(
+                    failTraining(
                         "Training failed — sample was too quiet too many times. Try again closer to the microphone."
                     )
                     return nil
@@ -328,7 +352,7 @@ final class AppCoordinator: ObservableObject {
                 }
 
                 if quietRetries >= maxQuietSampleRetriesPerSample {
-                    appState.status = .trainingFailed(
+                    failTraining(
                         "Training failed — sample was too quiet too many times. Try again closer to the microphone."
                     )
                     return nil
@@ -340,9 +364,15 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    private func runSampleCountdown(sampleIndex: Int) async -> Bool {
+    private func runSampleCountdown(sampleIndex: Int, total: Int = 3) async -> Bool {
+        resetTrainingInputLevel()
         for secondsRemaining in stride(from: trainingCountdownSeconds, through: 1, by: -1) {
             if Task.isCancelled { return false }
+            appState.trainingUIPhase = .countdown(
+                sample: sampleIndex,
+                total: total,
+                secondsRemaining: secondsRemaining
+            )
             print("[Training] Sample \(sampleIndex)/3 countdown: \(secondsRemaining)")
             try? await Task.sleep(for: .seconds(1))
         }
@@ -351,6 +381,8 @@ final class AppCoordinator: ObservableObject {
 
     private func captureSample(sampleRate: Double, sampleIndex: Int) async -> TrainingCaptureResult {
         guard await runSampleCountdown(sampleIndex: sampleIndex) else { return .captureFailed }
+
+        appState.trainingUIPhase = .listening(sample: sampleIndex, total: 3)
 
         print(
             "[Training] Recording sample \(sampleIndex)/3 now — speak your AHEM within "
@@ -385,6 +417,7 @@ final class AppCoordinator: ObservableObject {
         }
 
         print("[Training] Sample recording finished (sample \(sampleIndex)/3)")
+        resetTrainingInputLevel()
 
         guard !capturedFrames.isEmpty else { return .captureFailed }
 
@@ -418,10 +451,52 @@ final class AppCoordinator: ObservableObject {
         }
 
         if activeSampleCollector != nil {
+            updateTrainingInputLevel(from: buffer)
             activeSampleCollector?.append(buffer: buffer)
             return
         }
 
         panicDetector?.process(buffer: buffer)
+    }
+
+    private func updateTrainingInputLevel(from buffer: AVAudioPCMBuffer) {
+        guard let level = Self.normalizedTrainingInputLevel(from: buffer) else { return }
+
+        Task { @MainActor [weak self] in
+            guard let self, self.activeSampleCollector != nil else {
+                self?.resetTrainingInputLevel()
+                return
+            }
+
+            let smoothing = 0.35
+            let smoothed = (self.trainingInputLevelSmoothed * (1 - smoothing)) + (level * smoothing)
+            self.trainingInputLevelSmoothed = min(1, max(0, smoothed))
+            self.appState.trainingInputLevel = self.trainingInputLevelSmoothed
+        }
+    }
+
+    private func resetTrainingInputLevel() {
+        trainingInputLevelSmoothed = 0
+        appState.trainingInputLevel = 0
+    }
+
+    private static func normalizedTrainingInputLevel(from buffer: AVAudioPCMBuffer) -> Double? {
+        guard let channelData = buffer.floatChannelData else { return nil }
+
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0 else { return nil }
+
+        let samples = channelData[0]
+        var sumSquares = 0.0
+        for index in 0..<frameLength {
+            let sample = Double(samples[index])
+            sumSquares += sample * sample
+        }
+
+        let rms = sqrt(sumSquares / Double(frameLength))
+        guard rms.isFinite else { return nil }
+
+        let displayMaximum = 0.12
+        return min(1, max(0, rms / displayMaximum))
     }
 }

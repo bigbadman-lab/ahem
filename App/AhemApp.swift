@@ -18,5 +18,10 @@ struct AhemApp: App {
             MenuBarView(coordinator: coordinator)
         }
         .menuBarExtraStyle(.menu)
+
+        Window("Train your panic cough", id: TrainingWindowID.value) {
+            TrainingView(coordinator: coordinator)
+        }
+        .defaultSize(width: 400, height: 460)
     }
 }
