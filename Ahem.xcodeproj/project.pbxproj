@@ -16,6 +16,9 @@
 		A1B2C3D40100000000000008 /* PanicFingerprintService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000008 /* PanicFingerprintService.swift */; };
 		A1B2C3D40100000000000009 /* TrainingSampleCollector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000009 /* TrainingSampleCollector.swift */; };
 		A1B2C3D4010000000000000A /* PanicFingerprintStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000000A /* PanicFingerprintStore.swift */; };
+		A1B2C3D4010000000000000B /* PanicDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000000B /* PanicDetector.swift */; };
+		A1B2C3D4010000000000000C /* DetectionRollingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000000C /* DetectionRollingWindow.swift */; };
+		A1B2C3D4010000000000000D /* PanicDetectionResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000000D /* PanicDetectionResult.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -28,6 +31,9 @@
 		A1B2C3D40200000000000008 /* PanicFingerprintService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanicFingerprintService.swift; sourceTree = "<group>"; };
 		A1B2C3D40200000000000009 /* TrainingSampleCollector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingSampleCollector.swift; sourceTree = "<group>"; };
 		A1B2C3D4020000000000000A /* PanicFingerprintStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanicFingerprintStore.swift; sourceTree = "<group>"; };
+		A1B2C3D4020000000000000B /* PanicDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanicDetector.swift; sourceTree = "<group>"; };
+		A1B2C3D4020000000000000C /* DetectionRollingWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetectionRollingWindow.swift; sourceTree = "<group>"; };
+		A1B2C3D4020000000000000D /* PanicDetectionResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanicDetectionResult.swift; sourceTree = "<group>"; };
 		A1B2C3D40300000000000001 /* Ahem.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ahem.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -85,6 +91,7 @@
 			isa = PBXGroup;
 			children = (
 				A1B2C3D40200000000000007 /* PanicFingerprint.swift */,
+				A1B2C3D4020000000000000D /* PanicDetectionResult.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -118,6 +125,8 @@
 				A1B2C3D40200000000000006 /* AudioCaptureService.swift */,
 				A1B2C3D40200000000000008 /* PanicFingerprintService.swift */,
 				A1B2C3D40200000000000009 /* TrainingSampleCollector.swift */,
+				A1B2C3D4020000000000000B /* PanicDetector.swift */,
+				A1B2C3D4020000000000000C /* DetectionRollingWindow.swift */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -188,6 +197,9 @@
 				A1B2C3D40100000000000008 /* PanicFingerprintService.swift in Sources */,
 				A1B2C3D40100000000000009 /* TrainingSampleCollector.swift in Sources */,
 				A1B2C3D4010000000000000A /* PanicFingerprintStore.swift in Sources */,
+				A1B2C3D4010000000000000B /* PanicDetector.swift in Sources */,
+				A1B2C3D4010000000000000C /* DetectionRollingWindow.swift in Sources */,
+				A1B2C3D4010000000000000D /* PanicDetectionResult.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

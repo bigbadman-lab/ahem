@@ -9,6 +9,7 @@ enum AppStatus: Equatable {
     case training(sample: Int, total: Int)
     case trainingComplete
     case trainingFailed(String)
+    case panicDetected
 }
 
 extension AppStatus {
@@ -18,7 +19,7 @@ extension AppStatus {
             return "Starting…"
         case .microphonePermissionNeeded:
             return "Microphone Permission Needed"
-        case .listening:
+        case .listening, .panicDetected:
             return "Listening"
         case .microphonePermissionDenied:
             return "Microphone Permission Denied"
