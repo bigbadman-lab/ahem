@@ -18,8 +18,10 @@ final class AppCoordinator: ObservableObject {
     private var activeSampleCollector: TrainingSampleCollector?
     private var detectionResetTask: Task<Void, Never>?
 
-    private let sampleDuration: TimeInterval = 1.0
-    private let trainingGetReadyDelay: TimeInterval = 1.0
+    private let trainingRecordingWindowSeconds: TimeInterval = 5.0
+    private let trainingCountdownSeconds = 5
+    private let trainingInterSamplePause: TimeInterval = 1.0
+    private let maxQuietSampleRetriesPerSample = 2
     private let trainingCompleteDisplayDuration: TimeInterval = 2.0
     private let panicDetectedDisplayDuration: TimeInterval = 1.0
 
@@ -224,31 +226,19 @@ final class AppCoordinator: ObservableObject {
             print("[Training] Sample \(sampleIndex)/3 started")
             #endif
 
-            guard let features = await captureSample(sampleRate: sampleRate, sampleIndex: sampleIndex) else {
-                #if DEBUG
-                print("[Training] Sample \(sampleIndex)/3 rejected — could not capture audio")
-                #endif
-                appState.status = .trainingFailed("Could not capture sample \(sampleIndex).")
+            guard let features = await captureAcceptedSample(
+                sampleRate: sampleRate,
+                sampleIndex: sampleIndex
+            ) else {
                 return
             }
-
-            #if DEBUG
-            print("[Training] Sample RMS: \(String(format: "%.4f", features.rms))")
-            #endif
-
-            guard panicFingerprintService.isUsableSample(features) else {
-                #if DEBUG
-                print("[Training] Sample \(sampleIndex)/3 rejected — RMS below minimum threshold")
-                #endif
-                appState.status = .trainingFailed("Sample \(sampleIndex) was too quiet. Make your panic signal clearly.")
-                return
-            }
-
-            #if DEBUG
-            print("[Training] Sample \(sampleIndex)/3 accepted")
-            #endif
 
             collectedSamples.append(features)
+
+            if sampleIndex < 3 {
+                try? await Task.sleep(for: .seconds(trainingInterSamplePause))
+                if Task.isCancelled { return }
+            }
         }
 
         do {
@@ -258,7 +248,11 @@ final class AppCoordinator: ObservableObject {
 
             #if DEBUG
             print("[Training] Training completed")
-            print("[Training] Saved panic fingerprint with averageRMS: \(fingerprint.averageRMS)")
+            print(
+                "[Training] Saved panic fingerprint v\(fingerprint.version) "
+                    + "with averageRMS: \(fingerprint.averageRMS), "
+                    + "consistency: \(String(format: "%.2f", fingerprint.trainingConsistency))"
+            )
             #endif
         } catch {
             #if DEBUG
@@ -274,36 +268,120 @@ final class AppCoordinator: ObservableObject {
         appState.status = .listening
     }
 
-    private func captureSample(sampleRate: Double, sampleIndex: Int) async -> SampleFeatures? {
-        #if DEBUG
-        print("[Training] Get ready delay started (sample \(sampleIndex)/3)")
-        #endif
+    private enum TrainingCaptureResult {
+        case features(SampleFeatures)
+        case noActiveRegion
+        case captureFailed
+    }
 
-        try? await Task.sleep(for: .seconds(trainingGetReadyDelay))
-        if Task.isCancelled { return nil }
+    private func captureAcceptedSample(
+        sampleRate: Double,
+        sampleIndex: Int
+    ) async -> SampleFeatures? {
+        var quietRetries = 0
 
-        #if DEBUG
-        print("[Training] Get ready delay finished (sample \(sampleIndex)/3)")
+        while true {
+            if Task.isCancelled { return nil }
+
+            switch await captureSample(sampleRate: sampleRate, sampleIndex: sampleIndex) {
+            case .captureFailed:
+                #if DEBUG
+                print("[Training] Sample \(sampleIndex)/3 rejected — could not capture audio")
+                #endif
+                appState.status = .trainingFailed("Could not capture sample \(sampleIndex).")
+                return nil
+
+            case .noActiveRegion:
+                if quietRetries >= maxQuietSampleRetriesPerSample {
+                    appState.status = .trainingFailed(
+                        "Training failed — sample was too quiet too many times. Try again closer to the microphone."
+                    )
+                    return nil
+                }
+
+                quietRetries += 1
+                print("[Training] Sample \(sampleIndex)/3 too quiet — retrying same sample")
+                continue
+
+            case .features(let features):
+                #if DEBUG
+                print("[Training] Sample RMS: \(String(format: "%.4f", features.rms))")
+                PanicFingerprintService.logSampleFeaturesSummary(features, sampleIndex: sampleIndex)
+                #endif
+
+                if panicFingerprintService.isUsableSample(features) {
+                    print("[Training] Sample \(sampleIndex)/3 accepted")
+                    return features
+                }
+
+                if quietRetries >= maxQuietSampleRetriesPerSample {
+                    appState.status = .trainingFailed(
+                        "Training failed — sample was too quiet too many times. Try again closer to the microphone."
+                    )
+                    return nil
+                }
+
+                quietRetries += 1
+                print("[Training] Sample \(sampleIndex)/3 too quiet — retrying same sample")
+            }
+        }
+    }
+
+    private func runSampleCountdown(sampleIndex: Int) async -> Bool {
+        for secondsRemaining in stride(from: trainingCountdownSeconds, through: 1, by: -1) {
+            if Task.isCancelled { return false }
+            print("[Training] Sample \(sampleIndex)/3 countdown: \(secondsRemaining)")
+            try? await Task.sleep(for: .seconds(1))
+        }
+        return !Task.isCancelled
+    }
+
+    private func captureSample(sampleRate: Double, sampleIndex: Int) async -> TrainingCaptureResult {
+        guard await runSampleCountdown(sampleIndex: sampleIndex) else { return .captureFailed }
+
+        print(
+            "[Training] Recording sample \(sampleIndex)/3 now — speak your AHEM within "
+                + "\(Int(trainingRecordingWindowSeconds)) seconds"
+        )
         print("[Training] Sample recording began (sample \(sampleIndex)/3)")
-        #endif
 
-        let features = await withCheckedContinuation { continuation in
+        let capturedFrames = await withCheckedContinuation { continuation in
             let collector = TrainingSampleCollector(
                 sampleRate: sampleRate,
-                duration: sampleDuration
-            ) { [weak self] features in
+                duration: trainingRecordingWindowSeconds
+            ) { [weak self] frames in
                 self?.activeSampleCollector = nil
-                continuation.resume(returning: features)
+                continuation.resume(returning: frames)
             }
 
             activeSampleCollector = collector
         }
 
-        #if DEBUG
         print("[Training] Sample recording finished (sample \(sampleIndex)/3)")
-        #endif
 
-        return features
+        guard !capturedFrames.isEmpty else { return .captureFailed }
+
+        let captureDuration = Double(capturedFrames.count) / sampleRate
+        print("[Training] Sample \(sampleIndex)/3 capture duration: \(String(format: "%.2f", captureDuration))s")
+
+        switch panicFingerprintService.extractTrainingFeatures(from: capturedFrames, sampleRate: sampleRate) {
+        case .emptyBuffer:
+            return .captureFailed
+
+        case .noActiveRegion:
+            print("[Training] Sample \(sampleIndex)/3 active region not found — too quiet")
+            return .noActiveRegion
+
+        case .extracted(let features, let activeRegionStart, let activeRegionEnd):
+            let activeRegionDuration = activeRegionEnd - activeRegionStart
+            print(
+                "[Training] Sample \(sampleIndex)/3 active region: "
+                    + "start \(String(format: "%.2f", activeRegionStart))s, "
+                    + "end \(String(format: "%.2f", activeRegionEnd))s, "
+                    + "duration \(String(format: "%.2f", activeRegionDuration))s"
+            )
+            return .features(features)
+        }
     }
 
     private func handleAudioBuffer(_ buffer: AVAudioPCMBuffer) {

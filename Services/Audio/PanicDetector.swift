@@ -10,6 +10,8 @@ final class PanicDetector {
         let confidenceLogInterval: TimeInterval
         let confidenceHistorySize: Int
         let peakSanityMinimumSimilarity: Double
+        let noiseFloorMultiplier: Double
+        let noiseFloorHistorySize: Int
 
         static let `default` = Configuration(
             threshold: 0.78,
@@ -18,7 +20,9 @@ final class PanicDetector {
             analysisInterval: 0.25,
             confidenceLogInterval: 3.0,
             confidenceHistorySize: 4,
-            peakSanityMinimumSimilarity: 0.40
+            peakSanityMinimumSimilarity: 0.40,
+            noiseFloorMultiplier: 4.0,
+            noiseFloorHistorySize: 20
         )
     }
 
@@ -34,6 +38,8 @@ final class PanicDetector {
     private var lastConfidenceLogTime: Date?
     private var isActive = false
     private var confidenceHistory: [Double] = []
+    private var noiseFloorRMS: Double = PanicFingerprintService.minimumRMS
+    private var noiseFloorHistory: [Double] = []
 
     init(fingerprint: PanicFingerprint, configuration: Configuration = .default) {
         self.fingerprint = fingerprint
@@ -55,11 +61,13 @@ final class PanicDetector {
         lastDetectionTime = nil
         lastConfidenceLogTime = nil
         confidenceHistory.removeAll(keepingCapacity: true)
+        noiseFloorRMS = PanicFingerprintService.minimumRMS
+        noiseFloorHistory.removeAll(keepingCapacity: true)
 
         #if DEBUG
         print(
-            "[Detection] Active (threshold: \(config.threshold), cooldown: \(config.cooldownDuration)s, "
-                + "smoothing: \(config.confidenceHistorySize))"
+            "[Detection] Active (version: \(fingerprint.version), threshold: \(config.threshold), "
+                + "cooldown: \(config.cooldownDuration)s, smoothing: \(config.confidenceHistorySize))"
         )
         #endif
     }
@@ -72,6 +80,8 @@ final class PanicDetector {
         rollingWindow = nil
         isActive = false
         confidenceHistory.removeAll(keepingCapacity: true)
+        noiseFloorHistory.removeAll(keepingCapacity: true)
+        noiseFloorRMS = PanicFingerprintService.minimumRMS
     }
 
     func process(buffer: AVAudioPCMBuffer) {
@@ -92,7 +102,7 @@ final class PanicDetector {
             return
         }
 
-        let instantaneousConfidence = Self.computeConfidence(live: live, fingerprint: fingerprint)
+        let instantaneousConfidence = fingerprintService.computeConfidence(live: live, fingerprint: fingerprint)
 
         stateLock.lock()
         confidenceHistory.append(instantaneousConfidence)
@@ -100,15 +110,24 @@ final class PanicDetector {
             confidenceHistory.removeFirst(confidenceHistory.count - config.confidenceHistorySize)
         }
         let smoothedConfidence = confidenceHistory.reduce(0, +) / Double(confidenceHistory.count)
+        let currentNoiseFloor = noiseFloorRMS
+        stateLock.unlock()
 
-        let passesPeakSanity = Self.passesPeakSanityCheck(
+        let passesPeakSanity = fingerprintService.passesPeakSanityCheck(
             live: live,
             fingerprint: fingerprint,
             minimumSimilarity: config.peakSanityMinimumSimilarity
         )
+        let passesNoiseFloor = live.rms >= currentNoiseFloor * config.noiseFloorMultiplier
+        let qualifies = passesPeakSanity
+            && passesNoiseFloor
+            && instantaneousConfidence >= config.threshold
 
-        let qualifies = passesPeakSanity && instantaneousConfidence >= config.threshold
+        if instantaneousConfidence < config.threshold {
+            updateNoiseFloor(with: live.rms)
+        }
 
+        stateLock.lock()
         let inCooldown: Bool
         if let lastDetectionTime {
             inCooldown = Date().timeIntervalSince(lastDetectionTime) < config.cooldownDuration
@@ -123,6 +142,7 @@ final class PanicDetector {
             instantaneous: instantaneousConfidence,
             smoothed: smoothedConfidence,
             threshold: config.threshold,
+            noiseFloor: currentNoiseFloor,
             fired: fired
         )
 
@@ -169,52 +189,24 @@ final class PanicDetector {
         }
     }
 
-    static func computeConfidence(live: SampleFeatures, fingerprint: PanicFingerprint) -> Double {
-        let profileReference = SampleFeatures(
-            rms: fingerprint.averageRMS,
-            peak: fingerprint.peakRMS,
-            zeroCrossingRate: fingerprint.zeroCrossingRate,
-            duration: fingerprint.duration
-        )
+    private func updateNoiseFloor(with rms: Double) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
 
-        var best = confidence(live: live, reference: profileReference)
-        for sample in fingerprint.samples {
-            best = max(best, confidence(live: live, reference: sample))
+        noiseFloorHistory.append(rms)
+        if noiseFloorHistory.count > config.noiseFloorHistorySize {
+            noiseFloorHistory.removeFirst(noiseFloorHistory.count - config.noiseFloorHistorySize)
         }
-        return min(1.0, max(0.0, best))
-    }
 
-    static func passesPeakSanityCheck(
-        live: SampleFeatures,
-        fingerprint: PanicFingerprint,
-        minimumSimilarity: Double
-    ) -> Bool {
-        var referencePeaks = fingerprint.samples.map(\.peak)
-        referencePeaks.append(fingerprint.peakRMS)
-
-        return referencePeaks.contains { referencePeak in
-            ratioSimilarity(live.peak, referencePeak) >= minimumSimilarity
-        }
-    }
-
-    private static func confidence(live: SampleFeatures, reference: SampleFeatures) -> Double {
-        let rmsSimilarity = ratioSimilarity(live.rms, reference.rms)
-        let peakSimilarity = ratioSimilarity(live.peak, reference.peak)
-        let zeroCrossingSimilarity = ratioSimilarity(live.zeroCrossingRate, reference.zeroCrossingRate, floor: 0.01)
-
-        return (0.45 * rmsSimilarity) + (0.35 * peakSimilarity) + (0.20 * zeroCrossingSimilarity)
-    }
-
-    private static func ratioSimilarity(_ live: Double, _ reference: Double, floor: Double = 0.0001) -> Double {
-        let maximum = max(live, reference, floor)
-        let minimum = min(live, reference)
-        return minimum / maximum
+        let average = noiseFloorHistory.reduce(0, +) / Double(noiseFloorHistory.count)
+        noiseFloorRMS = max(PanicFingerprintService.minimumRMS, average)
     }
 
     private func logAnalysisIfNeeded(
         instantaneous: Double,
         smoothed: Double,
         threshold: Double,
+        noiseFloor: Double,
         fired: Bool
     ) {
         #if DEBUG
@@ -232,6 +224,7 @@ final class PanicDetector {
             "[Detection] instantaneous: \(formatConfidence(instantaneous)), "
                 + "smoothed: \(formatConfidence(smoothed)), "
                 + "threshold: \(formatConfidence(threshold)), "
+                + "noiseFloor: \(String(format: "%.4f", noiseFloor)), "
                 + "fired: \(fired)"
         )
         #endif

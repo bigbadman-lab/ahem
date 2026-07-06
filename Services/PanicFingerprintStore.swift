@@ -19,7 +19,30 @@ final class PanicFingerprintStore {
 
     func load() -> PanicFingerprint? {
         guard let data = defaults.data(forKey: storageKey) else { return nil }
-        return try? JSONDecoder().decode(PanicFingerprint.self, from: data)
+        guard let fingerprint = try? JSONDecoder().decode(PanicFingerprint.self, from: data) else {
+            #if DEBUG
+            print("[Training] Stored fingerprint could not be decoded — retraining required")
+            #endif
+            return nil
+        }
+
+        guard fingerprint.isDetectionCompatible else {
+            #if DEBUG
+            print(
+                "[Training] Legacy fingerprint v\(fingerprint.version) is incompatible — retraining required"
+            )
+            #endif
+            return nil
+        }
+
+        #if DEBUG
+        print(
+            "[Detection] Loaded fingerprint v\(fingerprint.version) "
+                + "(consistency: \(String(format: "%.2f", fingerprint.trainingConsistency)))"
+        )
+        #endif
+
+        return fingerprint
     }
 
     func delete() {
