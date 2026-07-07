@@ -23,6 +23,7 @@ final class AppCoordinator: ObservableObject {
     private var isTraining = false
     private var trainingTask: Task<Void, Never>?
     private var activeSampleCollector: TrainingSampleCollector?
+    private var activeSampleCapture: SampleCaptureBridge?
     private var detectionResetTask: Task<Void, Never>?
     private var trainingInputLevelSmoothed: Double = 0
 
@@ -82,6 +83,66 @@ final class AppCoordinator: ObservableObject {
     func dismissTrainingUI() {
         resetTrainingInputLevel()
         appState.trainingUIPhase = .idle
+    }
+
+    private var trainingHasSucceeded: Bool {
+        switch appState.trainingUIPhase {
+        case .succeeded, .succeededListeningActive:
+            return true
+        default:
+            return false
+        }
+    }
+
+    func handleTrainingWindowClosed() {
+        if appState.status == .trainingComplete || trainingHasSucceeded {
+            #if DEBUG
+            print("[Training] Window closed after success")
+            #endif
+            finishSuccessfulTrainingOnWindowClose()
+            return
+        }
+
+        if isTraining {
+            #if DEBUG
+            print("[Training] Training cancelled by closing window")
+            #endif
+            cancelTrainingSession()
+            return
+        }
+
+        #if DEBUG
+        print("[Training] Window closed before start")
+        #endif
+        dismissTrainingUI()
+    }
+
+    private func finishSuccessfulTrainingOnWindowClose() {
+        trainingTask?.cancel()
+        dismissTrainingUI()
+        if !isTraining {
+            configureDetection()
+        }
+    }
+
+    private func cancelTrainingSession() {
+        trainingTask?.cancel()
+        activeSampleCapture?.resume(with: [])
+
+        if activeSampleCollector != nil {
+            #if DEBUG
+            print("[Training] Active sample collector cleared")
+            #endif
+        }
+        activeSampleCollector = nil
+        audioPipeline.setSampleCollector(nil)
+
+        resetTrainingInputLevel()
+        dismissTrainingUI()
+
+        #if DEBUG
+        print("[Training] Training cancellation complete")
+        #endif
     }
 
     func pauseListening() {
@@ -433,6 +494,7 @@ final class AppCoordinator: ObservableObject {
 
             switch await captureSample(sampleRate: sampleRate, sampleIndex: sampleIndex) {
             case .captureFailed:
+                if Task.isCancelled { return nil }
                 #if DEBUG
                 print("[Training] Sample \(sampleIndex)/3 rejected — could not capture audio")
                 #endif
@@ -501,33 +563,30 @@ final class AppCoordinator: ObservableObject {
         )
         print("[Training] Sample recording began (sample \(sampleIndex)/3)")
 
-        let capturedFrames = await withCheckedContinuation { continuation in
-            final class ResumeGuard: @unchecked Sendable {
-                private let lock = NSLock()
-                private var didResume = false
+        let bridge = SampleCaptureBridge()
+        activeSampleCapture = bridge
 
-                func resumeOnce(returning frames: [Float], continuation: CheckedContinuation<[Float], Never>) {
-                    lock.lock()
-                    defer { lock.unlock() }
-                    guard !didResume else { return }
-                    didResume = true
-                    continuation.resume(returning: frames)
+        let capturedFrames = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                bridge.attach(continuation)
+
+                let collector = TrainingSampleCollector(
+                    sampleRate: sampleRate,
+                    duration: trainingRecordingWindowSeconds
+                ) { [weak self] frames in
+                    self?.activeSampleCollector = nil
+                    self?.audioPipeline.setSampleCollector(nil)
+                    bridge.resume(with: frames)
                 }
-            }
 
-            let resumeGuard = ResumeGuard()
-            let collector = TrainingSampleCollector(
-                sampleRate: sampleRate,
-                duration: trainingRecordingWindowSeconds
-            ) { [weak self] frames in
-                self?.activeSampleCollector = nil
-                self?.audioPipeline.setSampleCollector(nil)
-                resumeGuard.resumeOnce(returning: frames, continuation: continuation)
+                activeSampleCollector = collector
+                audioPipeline.setSampleCollector(collector)
             }
-
-            activeSampleCollector = collector
-            audioPipeline.setSampleCollector(collector)
+        } onCancel: {
+            bridge.resume(with: [])
         }
+
+        activeSampleCapture = nil
 
         print("[Training] Sample recording finished (sample \(sampleIndex)/3)")
         resetTrainingInputLevel()
@@ -596,5 +655,31 @@ final class AppCoordinator: ObservableObject {
 
         let displayMaximum = 0.12
         return min(1, max(0, rms / displayMaximum))
+    }
+}
+
+private final class SampleCaptureBridge: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didResume = false
+    private var continuation: CheckedContinuation<[Float], Never>?
+
+    func attach(_ continuation: CheckedContinuation<[Float], Never>) {
+        lock.lock()
+        defer { lock.unlock() }
+        if didResume {
+            continuation.resume(returning: [])
+            return
+        }
+        self.continuation = continuation
+    }
+
+    func resume(with frames: [Float]) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !didResume else { return }
+        didResume = true
+        let pending = continuation
+        continuation = nil
+        pending?.resume(returning: frames)
     }
 }

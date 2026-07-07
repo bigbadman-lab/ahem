@@ -21,6 +21,9 @@ struct TrainingView: View {
             minWidth: AhemLayout.windowMinWidth,
             minHeight: AhemLayout.trainingWindowMinHeight
         )
+        .onDisappear {
+            coordinator.handleTrainingWindowClosed()
+        }
     }
 
     @ViewBuilder
@@ -67,7 +70,6 @@ struct TrainingView: View {
     }
 
     private func dismiss() {
-        coordinator.dismissTrainingUI()
         dismissWindow(id: TrainingWindowID.value)
     }
 }
