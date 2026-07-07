@@ -12,12 +12,15 @@ struct TrainingView: View {
     }
 
     var body: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: AhemLayout.windowSectionSpacing) {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(32)
-        .frame(minWidth: 380, minHeight: 420)
+        .padding(AhemLayout.windowContentPadding)
+        .frame(
+            minWidth: AhemLayout.windowMinWidth,
+            minHeight: AhemLayout.trainingWindowMinHeight
+        )
     }
 
     @ViewBuilder
@@ -80,8 +83,11 @@ private struct TrainingWelcomeView: View {
         VStack(spacing: 20) {
             Spacer()
 
+            AhemAppIconView()
+                .padding(.bottom, 8)
+
             Text("Train your panic cough")
-                .font(.largeTitle)
+                .font(.title)
                 .fontWeight(.semibold)
                 .multilineTextAlignment(.center)
 
@@ -219,6 +225,9 @@ private struct TrainingSucceededView: View {
             Text("✓ Training Complete")
                 .font(.title)
                 .fontWeight(.semibold)
+
+            AhemAppIconView()
+                .padding(.vertical, 8)
 
             Text(listeningIsActive
                 ? "Listening is now active."

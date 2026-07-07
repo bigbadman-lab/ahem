@@ -45,8 +45,11 @@ struct PreferencesView: View {
             }
         }
         .formStyle(.grouped)
-        .padding()
-        .frame(minWidth: 420, minHeight: 200)
+        .padding(AhemLayout.windowContentPadding / 2)
+        .frame(
+            minWidth: AhemLayout.preferencesWindowMinWidth,
+            minHeight: AhemLayout.preferencesWindowMinHeight
+        )
         .onAppear {
             refreshLaunchAtLoginState()
         }

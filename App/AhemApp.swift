@@ -14,24 +14,30 @@ struct AhemApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("Ahem", systemImage: "waveform") {
+        MenuBarExtra {
             MenuBarView(coordinator: coordinator)
+        } label: {
+            Image("MenuBarIcon")
+                .accessibilityLabel("Ahem")
         }
         .menuBarExtraStyle(.menu)
 
         Window("Train your panic cough", id: TrainingWindowID.value) {
             TrainingView(coordinator: coordinator)
         }
-        .defaultSize(width: 400, height: 460)
+        .defaultSize(width: AhemLayout.windowMinWidth + 20, height: AhemLayout.trainingWindowMinHeight + 40)
 
         Window("Preferences", id: PreferencesWindowID.value) {
             PreferencesView(coordinator: coordinator)
         }
-        .defaultSize(width: 420, height: 220)
+        .defaultSize(
+            width: AhemLayout.preferencesWindowMinWidth,
+            height: AhemLayout.preferencesWindowMinHeight
+        )
 
         Window("About Ahem", id: AboutWindowID.value) {
             AboutView()
         }
-        .defaultSize(width: 360, height: 420)
+        .defaultSize(width: AhemLayout.aboutWindowMinWidth, height: AhemLayout.aboutWindowMinHeight)
     }
 }

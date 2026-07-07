@@ -32,20 +32,28 @@ struct AboutView: View {
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 24)
         }
-        .frame(minWidth: 360, minHeight: 420)
+        .frame(
+            minWidth: AhemLayout.aboutWindowMinWidth,
+            minHeight: AhemLayout.aboutWindowMinHeight
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var header: some View {
-        VStack(spacing: 6) {
-            Text("Ahem")
-                .font(.largeTitle)
-                .fontWeight(.semibold)
+        VStack(spacing: 12) {
+            AhemAppIconView()
+                .padding(.bottom, 4)
 
-            Text("for awkward moments.")
-                .font(.title3)
-                .italic()
-                .foregroundStyle(.secondary)
+            VStack(spacing: 6) {
+                Text("Ahem")
+                    .font(.largeTitle)
+                    .fontWeight(.semibold)
+
+                Text("for awkward moments.")
+                    .font(.title3)
+                    .italic()
+                    .foregroundStyle(.secondary)
+            }
         }
         .multilineTextAlignment(.center)
     }

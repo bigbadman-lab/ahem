@@ -29,6 +29,9 @@
 		A1B2C3D40100000000000015 /* TrainingConfirmationSound.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000015 /* TrainingConfirmationSound.swift */; };
 		A1B2C3D40100000000000016 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000016 /* AboutView.swift */; };
 		A1B2C3D40100000000000017 /* AboutLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000017 /* AboutLinks.swift */; };
+		A1B2C3D40100000000000018 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000018 /* Assets.xcassets */; };
+		A1B2C3D40100000000000019 /* AhemLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000019 /* AhemLayout.swift */; };
+		A1B2C3D4010000000000001A /* AhemAppIconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000001A /* AhemAppIconView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -54,6 +57,9 @@
 		A1B2C3D40200000000000015 /* TrainingConfirmationSound.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingConfirmationSound.swift; sourceTree = "<group>"; };
 		A1B2C3D40200000000000016 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
 		A1B2C3D40200000000000017 /* AboutLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutLinks.swift; sourceTree = "<group>"; };
+		A1B2C3D40200000000000018 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A1B2C3D40200000000000019 /* AhemLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AhemLayout.swift; sourceTree = "<group>"; };
+		A1B2C3D4020000000000001A /* AhemAppIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AhemAppIconView.swift; sourceTree = "<group>"; };
 		A1B2C3D40300000000000001 /* Ahem.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ahem.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -67,6 +73,17 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
+/* Begin PBXResourcesBuildPhase section */
+		A1B2C3D40700000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1B2C3D40100000000000018 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXGroup section */
 		A1B2C3D40500000000000001 = {
 			isa = PBXGroup;
@@ -76,6 +93,7 @@
 				A1B2C3D40500000000000004 /* Services */,
 				A1B2C3D40500000000000005 /* Models */,
 				A1B2C3D40500000000000006 /* Utilities */,
+				A1B2C3D40200000000000018 /* Assets.xcassets */,
 				A1B2C3D40500000000000008 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -126,6 +144,8 @@
 		A1B2C3D40500000000000006 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				A1B2C3D40200000000000019 /* AhemLayout.swift */,
+				A1B2C3D4020000000000001A /* AhemAppIconView.swift */,
 			);
 			path = Utilities;
 			sourceTree = "<group>";
@@ -193,6 +213,7 @@
 			buildConfigurationList = A1B2C3D40800000000000003 /* Build configuration list for PBXNativeTarget "Ahem" */;
 			buildPhases = (
 				A1B2C3D40700000000000001 /* Sources */,
+				A1B2C3D40700000000000002 /* Resources */,
 				A1B2C3D40400000000000001 /* Frameworks */,
 			);
 			buildRules = (
@@ -264,6 +285,8 @@
 				A1B2C3D40100000000000015 /* TrainingConfirmationSound.swift in Sources */,
 				A1B2C3D40100000000000016 /* AboutView.swift in Sources */,
 				A1B2C3D40100000000000017 /* AboutLinks.swift in Sources */,
+				A1B2C3D40100000000000019 /* AhemLayout.swift in Sources */,
+				A1B2C3D4010000000000001A /* AhemAppIconView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -373,6 +396,7 @@
 		A1B2C3D40A00000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -398,6 +422,7 @@
 		A1B2C3D40A00000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;

@@ -38,6 +38,7 @@ struct MenuBarView: View {
                 coordinator.quit()
             }
         }
+        .padding(.horizontal, AhemLayout.menuHorizontalPadding)
         .onAppear {
             coordinator.start()
         }
