@@ -120,7 +120,11 @@ private struct TrainingCountdownView: View {
         VStack(spacing: 24) {
             Spacer()
 
-            Text("Sample \(sample) of \(total)")
+            Text("\(sample) of \(total)")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+
+            Text("Get ready…")
                 .font(.title3)
                 .foregroundStyle(.secondary)
 
@@ -156,7 +160,11 @@ private struct TrainingListeningView: View {
         VStack(spacing: 24) {
             Spacer()
 
-            Text("Sample \(sample) of \(total)")
+            Text("\(sample) of \(total)")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+
+            Text("Give your best")
                 .font(.title3)
                 .foregroundStyle(.secondary)
 
@@ -209,12 +217,23 @@ private struct TrainingBetweenSamplesView: View {
                 .fontWeight(.semibold)
 
             if completedSample < total {
-                Text("Preparing sample \(completedSample + 1)...")
+                Text(betweenRecordingsMessage)
                     .font(.title3)
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
+        }
+    }
+
+    private var betweenRecordingsMessage: String {
+        switch completedSample {
+        case 1:
+            return "Let's do that again..."
+        case 2:
+            return "One more..."
+        default:
+            return "Let's do that again..."
         }
     }
 }

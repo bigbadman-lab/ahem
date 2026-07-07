@@ -83,7 +83,7 @@ final class AppCoordinator: ObservableObject {
             await handleOnboardingPermission(permission)
 
         case .granted:
-            await startOnboardingTraining()
+            enterOnboardingTrainingWelcome()
 
         case .denied:
             appState.onboardingPhase = .permissionDenied
@@ -141,7 +141,7 @@ final class AppCoordinator: ObservableObject {
     private func handleOnboardingPermission(_ permission: MicrophonePermissionStatus) async {
         switch permission {
         case .granted:
-            await startOnboardingTraining()
+            enterOnboardingTrainingWelcome()
 
         case .denied:
             appState.onboardingPhase = .permissionDenied
@@ -153,19 +153,13 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    private func startOnboardingTraining() async {
-        if !audioCaptureService.isCapturing {
-            do {
-                try audioCaptureService.startCapture()
-            } catch {
-                appState.status = .audioError(error.localizedDescription)
-                appState.trainingUIPhase = .failed(error.localizedDescription)
-                return
-            }
-        }
-
+    private func enterOnboardingTrainingWelcome() {
         appState.onboardingPhase = .training
-        startTraining()
+        appState.trainingUIPhase = .welcome
+
+        #if DEBUG
+        print("[Onboarding] Permission granted — showing training welcome screen")
+        #endif
     }
 
     var isLaunchAtLoginEnabled: Bool {
