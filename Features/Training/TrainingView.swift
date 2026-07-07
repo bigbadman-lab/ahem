@@ -3,11 +3,13 @@ import SwiftUI
 struct TrainingView: View {
     @ObservedObject private var appState: AppState
     let coordinator: AppCoordinator
+    let handlesWindowLifecycle: Bool
 
     @Environment(\.dismissWindow) private var dismissWindow
 
-    init(coordinator: AppCoordinator) {
+    init(coordinator: AppCoordinator, handlesWindowLifecycle: Bool = true) {
         self.coordinator = coordinator
+        self.handlesWindowLifecycle = handlesWindowLifecycle
         _appState = ObservedObject(wrappedValue: coordinator.appState)
     }
 
@@ -16,12 +18,13 @@ struct TrainingView: View {
             content
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(AhemLayout.windowContentPadding)
+        .padding(handlesWindowLifecycle ? AhemLayout.windowContentPadding : 0)
         .frame(
             minWidth: AhemLayout.windowMinWidth,
             minHeight: AhemLayout.trainingWindowMinHeight
         )
         .onDisappear {
+            guard handlesWindowLifecycle else { return }
             coordinator.handleTrainingWindowClosed()
         }
     }

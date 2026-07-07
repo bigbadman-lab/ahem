@@ -11,6 +11,7 @@ final class AppCoordinator: ObservableObject {
     private let panicFingerprintStore = PanicFingerprintStore()
     private let browserHidingService = BrowserHidingService()
     private let launchAtLoginService = LaunchAtLoginService()
+    private let onboardingStore = OnboardingStore()
     let preferences = UserPreferencesStore()
     private let audioPipeline = AudioPipeline()
     private let audioProcessingQueue = DispatchQueue(
@@ -61,6 +62,110 @@ final class AppCoordinator: ObservableObject {
 
     var hasStoredFingerprint: Bool {
         panicFingerprintStore.hasStoredData
+    }
+
+    var shouldPresentOnboarding: Bool {
+        !onboardingStore.hasCompletedOnboarding
+    }
+
+    var isOnboardingSessionActive: Bool {
+        appState.onboardingPhase != .idle
+    }
+
+    func prepareOnboarding() {
+        appState.onboardingPhase = .welcome
+    }
+
+    func handleOnboardingGetStarted() async {
+        switch AudioCaptureService.currentPermissionStatus() {
+        case .notDetermined:
+            let permission = await AudioCaptureService.requestPermission()
+            await handleOnboardingPermission(permission)
+
+        case .granted:
+            await startOnboardingTraining()
+
+        case .denied:
+            appState.onboardingPhase = .permissionDenied
+            appState.status = .microphonePermissionDenied
+        }
+    }
+
+    func finishOnboarding() {
+        onboardingStore.markCompleted()
+        appState.onboardingPhase = .idle
+        dismissTrainingUI()
+        configureDetection()
+
+        #if DEBUG
+        print("[Onboarding] Onboarding completed")
+        #endif
+    }
+
+    func handleOnboardingWindowClosed() {
+        guard isOnboardingSessionActive else { return }
+
+        switch appState.onboardingPhase {
+        case .training:
+            if isTraining {
+                cancelTrainingSession()
+            } else {
+                dismissTrainingUI()
+            }
+
+        case .completion:
+            dismissTrainingUI()
+            configureDetection()
+
+        case .welcome, .permissionDenied:
+            break
+
+        case .idle:
+            break
+        }
+
+        appState.onboardingPhase = .idle
+
+        #if DEBUG
+        print("[Onboarding] Window closed — onboarding not completed")
+        #endif
+    }
+
+    func openMicrophoneSystemSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func handleOnboardingPermission(_ permission: MicrophonePermissionStatus) async {
+        switch permission {
+        case .granted:
+            await startOnboardingTraining()
+
+        case .denied:
+            appState.onboardingPhase = .permissionDenied
+            appState.status = .microphonePermissionDenied
+
+        case .notDetermined:
+            appState.onboardingPhase = .permissionDenied
+            appState.status = .microphonePermissionNeeded
+        }
+    }
+
+    private func startOnboardingTraining() async {
+        if !audioCaptureService.isCapturing {
+            do {
+                try audioCaptureService.startCapture()
+            } catch {
+                appState.status = .audioError(error.localizedDescription)
+                appState.trainingUIPhase = .failed(error.localizedDescription)
+                return
+            }
+        }
+
+        appState.onboardingPhase = .training
+        startTraining()
     }
 
     var isLaunchAtLoginEnabled: Bool {
@@ -248,6 +353,14 @@ final class AppCoordinator: ObservableObject {
         switch AudioCaptureService.currentPermissionStatus() {
         case .notDetermined:
             appState.status = .microphonePermissionNeeded
+
+            if !onboardingStore.hasCompletedOnboarding {
+                #if DEBUG
+                print("[Startup] Onboarding pending — deferring microphone permission request")
+                #endif
+                return
+            }
+
             let permission = await AudioCaptureService.requestPermission()
             await handlePermission(permission)
 
@@ -444,10 +557,27 @@ final class AppCoordinator: ObservableObject {
         do {
             let fingerprint = try panicFingerprintService.combine(samples: collectedSamples)
             try panicFingerprintStore.save(fingerprint)
-            appState.status = .trainingComplete
             appState.lastTrainedAt = fingerprint.createdAt
-            appState.trainingUIPhase = .succeeded
             playTrainingConfirmationSoundIfEnabled()
+
+            if isOnboardingSessionActive {
+                appState.onboardingPhase = .completion
+                appState.trainingUIPhase = .idle
+
+                #if DEBUG
+                print("[Onboarding] Training complete — showing completion screen")
+                print("[Training] Training completed")
+                print(
+                    "[Training] Saved panic fingerprint v\(fingerprint.version) "
+                        + "with averageRMS: \(fingerprint.averageRMS), "
+                        + "consistency: \(String(format: "%.2f", fingerprint.trainingConsistency))"
+                )
+                #endif
+                return
+            }
+
+            appState.status = .trainingComplete
+            appState.trainingUIPhase = .succeeded
 
             #if DEBUG
             print("[Training] Training completed")

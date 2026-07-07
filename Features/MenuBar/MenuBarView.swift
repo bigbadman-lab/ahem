@@ -41,6 +41,9 @@ struct MenuBarView: View {
         .padding(.horizontal, AhemLayout.menuHorizontalPadding)
         .onAppear {
             coordinator.start()
+            if coordinator.shouldPresentOnboarding {
+                presentOnboarding()
+            }
         }
     }
 
@@ -111,6 +114,12 @@ struct MenuBarView: View {
         NSApp.activate(ignoringOtherApps: true)
         coordinator.prepareTrainingUI()
         openWindow(id: TrainingWindowID.value)
+    }
+
+    private func presentOnboarding() {
+        NSApp.activate(ignoringOtherApps: true)
+        coordinator.prepareOnboarding()
+        openWindow(id: OnboardingWindowID.value)
     }
 
     private func presentPreferences() {

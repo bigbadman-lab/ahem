@@ -1,6 +1,14 @@
 import Combine
 import Foundation
 
+enum OnboardingPhase: Equatable {
+    case idle
+    case welcome
+    case permissionDenied
+    case training
+    case completion
+}
+
 enum TrainingUIPhase: Equatable {
     case idle
     case welcome
@@ -143,6 +151,7 @@ extension AppStatus {
 
 final class AppState: ObservableObject {
     @Published var status: AppStatus = .starting
+    @Published var onboardingPhase: OnboardingPhase = .idle
     @Published var trainingUIPhase: TrainingUIPhase = .idle
     @Published var trainingInputLevel: Double = 0
     @Published var lastTrainedAt: Date?

@@ -32,6 +32,8 @@
 		A1B2C3D40100000000000018 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000018 /* Assets.xcassets */; };
 		A1B2C3D40100000000000019 /* AhemLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000019 /* AhemLayout.swift */; };
 		A1B2C3D4010000000000001A /* AhemAppIconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000001A /* AhemAppIconView.swift */; };
+		A1B2C3D4010000000000001B /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000001B /* OnboardingView.swift */; };
+		A1B2C3D4010000000000001C /* OnboardingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000001C /* OnboardingStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -60,6 +62,8 @@
 		A1B2C3D40200000000000018 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A1B2C3D40200000000000019 /* AhemLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AhemLayout.swift; sourceTree = "<group>"; };
 		A1B2C3D4020000000000001A /* AhemAppIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AhemAppIconView.swift; sourceTree = "<group>"; };
+		A1B2C3D4020000000000001B /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		A1B2C3D4020000000000001C /* OnboardingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingStore.swift; sourceTree = "<group>"; };
 		A1B2C3D40300000000000001 /* Ahem.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ahem.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -115,6 +119,7 @@
 				A1B2C3D4050000000000000B /* Training */,
 				A1B2C3D4050000000000000C /* Preferences */,
 				A1B2C3D4050000000000000D /* About */,
+				A1B2C3D4050000000000000E /* Onboarding */,
 			);
 			path = Features;
 			sourceTree = "<group>";
@@ -128,6 +133,7 @@
 				A1B2C3D40200000000000013 /* UserPreferencesStore.swift */,
 				A1B2C3D40200000000000014 /* LaunchAtLoginService.swift */,
 				A1B2C3D40200000000000015 /* TrainingConfirmationSound.swift */,
+				A1B2C3D4020000000000001C /* OnboardingStore.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -189,6 +195,14 @@
 				A1B2C3D40200000000000017 /* AboutLinks.swift */,
 			);
 			path = About;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4050000000000000E /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4020000000000001B /* OnboardingView.swift */,
+			);
+			path = Onboarding;
 			sourceTree = "<group>";
 		};
 		A1B2C3D4050000000000000A /* Audio */ = {
@@ -287,6 +301,8 @@
 				A1B2C3D40100000000000017 /* AboutLinks.swift in Sources */,
 				A1B2C3D40100000000000019 /* AhemLayout.swift in Sources */,
 				A1B2C3D4010000000000001A /* AhemAppIconView.swift in Sources */,
+				A1B2C3D4010000000000001B /* OnboardingView.swift in Sources */,
+				A1B2C3D4010000000000001C /* OnboardingStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -22,6 +22,11 @@ struct AhemApp: App {
         }
         .menuBarExtraStyle(.menu)
 
+        Window("Welcome to Ahem", id: OnboardingWindowID.value) {
+            OnboardingView(coordinator: coordinator)
+        }
+        .defaultSize(width: AhemLayout.windowMinWidth + 20, height: AhemLayout.trainingWindowMinHeight + 40)
+
         Window("Train your panic cough", id: TrainingWindowID.value) {
             TrainingView(coordinator: coordinator)
         }
