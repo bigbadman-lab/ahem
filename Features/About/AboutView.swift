@@ -8,9 +8,11 @@ struct AboutView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            Spacer(minLength: 16)
+
             header
-                .padding(.top, 36)
-                .padding(.bottom, 20)
+                .padding(.top, 48)
+                .padding(.bottom, 24)
 
             Text(versionString)
                 .font(.subheadline)
@@ -40,9 +42,8 @@ struct AboutView: View {
     }
 
     private var header: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 16) {
             AhemAppIconView()
-                .padding(.bottom, 4)
 
             VStack(spacing: 6) {
                 Text("Ahem")
