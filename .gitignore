@@ -16,6 +16,13 @@ xcuserdata/
 # Archives
 *.xcarchive
 
+# Distribution artifacts
+dist/
+*.dmg
+
 # Secrets
 .env
 .env.local
+notary-credentials*
+AuthKey_*.p8
+ExportOptions.plist
