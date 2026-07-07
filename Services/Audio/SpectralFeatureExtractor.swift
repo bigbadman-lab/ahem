@@ -162,22 +162,20 @@ enum SpectralFeatureExtractor {
         var real = [Float](repeating: 0, count: fftSize / 2)
         var imag = [Float](repeating: 0, count: fftSize / 2)
 
-        let transformed: Bool = input.withUnsafeBufferPointer { buffer in
-            guard let inputBase = buffer.baseAddress else { return false }
+        let transformed: Bool = real.withUnsafeMutableBufferPointer { realPointer in
+            imag.withUnsafeMutableBufferPointer { imagPointer in
+                guard let realBase = realPointer.baseAddress,
+                      let imagBase = imagPointer.baseAddress else {
+                    return false
+                }
 
-            return inputBase.withMemoryRebound(to: DSPComplex.self, capacity: fftSize / 2) { complexPointer in
-                var split = DSPSplitComplex(realp: &real, imagp: &imag)
-                vDSP_ctoz(complexPointer, 2, &split, 1, vDSP_Length(fftSize / 2))
+                return input.withUnsafeBufferPointer { buffer in
+                    guard let inputBase = buffer.baseAddress else { return false }
 
-                return real.withUnsafeMutableBufferPointer { realPointer in
-                    imag.withUnsafeMutableBufferPointer { imagPointer in
-                        guard let realBase = realPointer.baseAddress,
-                              let imagBase = imagPointer.baseAddress else {
-                            return false
-                        }
-
-                        var fftSplit = DSPSplitComplex(realp: realBase, imagp: imagBase)
-                        vDSP_fft_zrip(setup, &fftSplit, 1, log2n, FFTDirection(FFT_FORWARD))
+                    return inputBase.withMemoryRebound(to: DSPComplex.self, capacity: fftSize / 2) { complexPointer in
+                        var split = DSPSplitComplex(realp: realBase, imagp: imagBase)
+                        vDSP_ctoz(complexPointer, 2, &split, 1, vDSP_Length(fftSize / 2))
+                        vDSP_fft_zrip(setup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
                         return true
                     }
                 }

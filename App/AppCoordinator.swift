@@ -1,5 +1,5 @@
 import AppKit
-import AVFoundation
+@preconcurrency import AVFoundation
 import Combine
 
 @MainActor
@@ -464,7 +464,9 @@ final class AppCoordinator: ObservableObject {
     private func handlePanicDetected(confidence: Double) {
         guard appState.status == .listening || appState.status == .panicDetected else { return }
 
+        #if DEBUG
         print("[Panic] Detected with confidence: \(String(format: "%.2f", confidence))")
+        #endif
 
         let hideResult = browserHidingService.hideActiveBrowserIfSupported()
         logBrowserHidingResult(hideResult)
@@ -483,6 +485,7 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func logBrowserHidingResult(_ result: BrowserHidingResult) {
+        #if DEBUG
         switch result {
         case .hidden(let bundleIdentifier, let localizedName, let confirmation):
             switch confirmation {
@@ -498,6 +501,7 @@ final class AppCoordinator: ObservableObject {
         case .failed(let bundleIdentifier, let localizedName):
             print("[BrowserHiding] Failed to hide browser: \(localizedName) (\(bundleIdentifier))")
         }
+        #endif
     }
 
     private func runTrainingSession() async {
@@ -634,7 +638,9 @@ final class AppCoordinator: ObservableObject {
                 }
 
                 quietRetries += 1
+                #if DEBUG
                 print("[Training] Sample \(sampleIndex)/3 too quiet — retrying same sample")
+                #endif
                 continue
 
             case .features(let features):
@@ -644,7 +650,9 @@ final class AppCoordinator: ObservableObject {
                 #endif
 
                 if panicFingerprintService.isUsableSample(features) {
+                    #if DEBUG
                     print("[Training] Sample \(sampleIndex)/3 accepted")
+                    #endif
                     return features
                 }
 
@@ -656,7 +664,9 @@ final class AppCoordinator: ObservableObject {
                 }
 
                 quietRetries += 1
+                #if DEBUG
                 print("[Training] Sample \(sampleIndex)/3 too quiet — retrying same sample")
+                #endif
             }
         }
     }
@@ -670,7 +680,9 @@ final class AppCoordinator: ObservableObject {
                 total: total,
                 secondsRemaining: secondsRemaining
             )
+            #if DEBUG
             print("[Training] Sample \(sampleIndex)/3 countdown: \(secondsRemaining)")
+            #endif
             try? await Task.sleep(for: .seconds(1))
         }
         return !Task.isCancelled
@@ -681,11 +693,13 @@ final class AppCoordinator: ObservableObject {
 
         appState.trainingUIPhase = .listening(sample: sampleIndex, total: 3)
 
+        #if DEBUG
         print(
             "[Training] Recording sample \(sampleIndex)/3 now — speak your AHEM within "
                 + "\(Int(trainingRecordingWindowSeconds)) seconds"
         )
         print("[Training] Sample recording began (sample \(sampleIndex)/3)")
+        #endif
 
         let bridge = SampleCaptureBridge()
         activeSampleCapture = bridge
@@ -712,30 +726,38 @@ final class AppCoordinator: ObservableObject {
 
         activeSampleCapture = nil
 
+        #if DEBUG
         print("[Training] Sample recording finished (sample \(sampleIndex)/3)")
+        #endif
         resetTrainingInputLevel()
 
         guard !capturedFrames.isEmpty else { return .captureFailed }
 
         let captureDuration = Double(capturedFrames.count) / sampleRate
+        #if DEBUG
         print("[Training] Sample \(sampleIndex)/3 capture duration: \(String(format: "%.2f", captureDuration))s")
+        #endif
 
         switch panicFingerprintService.extractTrainingFeatures(from: capturedFrames, sampleRate: sampleRate) {
         case .emptyBuffer:
             return .captureFailed
 
         case .noActiveRegion:
+            #if DEBUG
             print("[Training] Sample \(sampleIndex)/3 active region not found — too quiet")
+            #endif
             return .noActiveRegion
 
         case .extracted(let features, let activeRegionStart, let activeRegionEnd):
             let activeRegionDuration = activeRegionEnd - activeRegionStart
+            #if DEBUG
             print(
                 "[Training] Sample \(sampleIndex)/3 active region: "
                     + "start \(String(format: "%.2f", activeRegionStart))s, "
                     + "end \(String(format: "%.2f", activeRegionEnd))s, "
                     + "duration \(String(format: "%.2f", activeRegionDuration))s"
             )
+            #endif
             return .features(features)
         }
     }
