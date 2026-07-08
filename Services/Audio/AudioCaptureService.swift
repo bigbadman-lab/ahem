@@ -1,9 +1,18 @@
+import AppKit
 import AVFoundation
 
-enum MicrophonePermissionStatus {
+enum MicrophonePermissionStatus: Equatable, CustomStringConvertible {
     case notDetermined
     case granted
     case denied
+
+    var description: String {
+        switch self {
+        case .notDetermined: return "notDetermined"
+        case .granted: return "granted"
+        case .denied: return "denied"
+        }
+    }
 }
 
 enum AudioCaptureError: LocalizedError {
@@ -42,23 +51,55 @@ final class AudioCaptureService {
     }
 
     static func currentPermissionStatus() -> MicrophonePermissionStatus {
-        switch AVAudioApplication.shared.recordPermission {
+        let audioAppStatus = AVAudioApplication.shared.recordPermission
+        let captureStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+
+        #if DEBUG
+        print(
+            "[Permission] Status check — "
+                + "AVAudioApplication.recordPermission=\(debugLabel(for: audioAppStatus)) "
+                + "AVCaptureDevice.audio=\(debugLabel(for: captureStatus))"
+        )
+        #endif
+
+        // Prefer the capture-device status for TCC prompt behaviour on macOS.
+        // Fall back to AVAudioApplication when capture status is unexpected.
+        switch captureStatus {
+        case .notDetermined:
+            return .notDetermined
+        case .authorized:
+            return .granted
+        case .denied, .restricted:
+            return .denied
+        @unknown default:
+            break
+        }
+
+        switch audioAppStatus {
+        case .undetermined:
+            return .notDetermined
         case .granted:
             return .granted
         case .denied:
             return .denied
-        case .undetermined:
-            return .notDetermined
         @unknown default:
-            return .denied
+            #if DEBUG
+            print("[Permission] Unknown AVAudioApplication.recordPermission rawValue=\(audioAppStatus.rawValue) — treating as notDetermined")
+            #endif
+            return .notDetermined
         }
     }
 
     /// Requests microphone permission when undetermined.
-    /// Must be called from the main actor while the app is active so macOS can present the system dialog.
+    /// Temporarily becomes a regular, frontmost app so macOS can present the system dialog.
+    /// - Parameter callSite: DEBUG label identifying the explicit user action that triggered the request.
     @MainActor
-    static func requestPermission() async -> MicrophonePermissionStatus {
+    static func requestPermission(callSite: String) async -> MicrophonePermissionStatus {
         let current = currentPermissionStatus()
+        #if DEBUG
+        print("[Permission] requestPermission() callSite=\(callSite) entered with status=\(current)")
+        #endif
+
         switch current {
         case .granted:
             return .granted
@@ -68,14 +109,177 @@ final class AudioCaptureService {
             break
         }
 
+        let previousPolicy = NSApp.activationPolicy()
+        #if DEBUG
+        print("[Permission] Activation policy before request=\(debugLabel(for: previousPolicy)) isActive=\(NSApp.isActive)")
+        #endif
+
+        if previousPolicy != .regular {
+            let didChange = NSApp.setActivationPolicy(.regular)
+            #if DEBUG
+            print(
+                "[Permission] Switched activation policy to .regular "
+                    + "didChange=\(didChange) now=\(debugLabel(for: NSApp.activationPolicy()))"
+            )
+            #endif
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        bringRelevantWindowsToFront()
+
+        // Give AppKit time to become frontmost before TCC presents its alert.
+        try? await Task.sleep(for: .milliseconds(400))
+
+        #if DEBUG
+        print(
+            "[Permission] Pre-request front state — "
+                + "policy=\(debugLabel(for: NSApp.activationPolicy())) "
+                + "isActive=\(NSApp.isActive) "
+                + "keyWindow=\(NSApp.keyWindow?.title ?? "nil") "
+                + "mainWindow=\(NSApp.mainWindow?.title ?? "nil")"
+        )
+        logRuntimeMicrophoneDiagnostics(callSite: callSite)
+        print("[Permission] Calling AVCaptureDevice.requestAccess(for: .audio) callSite=\(callSite)")
+        #endif
+
         let granted = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            AVAudioApplication.requestRecordPermission { granted in
-                continuation.resume(returning: granted)
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                Task { @MainActor in
+                    #if DEBUG
+                    print("[Permission] requestAccess callback returned granted=\(granted) callSite=\(callSite)")
+                    #endif
+                    continuation.resume(returning: granted)
+                }
             }
+        }
+
+        #if DEBUG
+        print("[Permission] AVCaptureDevice.requestAccess finished granted=\(granted) callSite=\(callSite)")
+        print(
+            "[Permission] Post-request statuses — "
+                + "AVAudioApplication=\(debugLabel(for: AVAudioApplication.shared.recordPermission)) "
+                + "AVCaptureDevice=\(debugLabel(for: AVCaptureDevice.authorizationStatus(for: .audio)))"
+        )
+        #endif
+
+        // Keep .regular briefly so the alert can finish dismissing before becoming accessory again.
+        try? await Task.sleep(for: .milliseconds(300))
+
+        if previousPolicy != .regular {
+            let didRestore = NSApp.setActivationPolicy(previousPolicy)
+            #if DEBUG
+            print(
+                "[Permission] Restored activation policy to \(debugLabel(for: previousPolicy)) "
+                    + "didChange=\(didRestore) now=\(debugLabel(for: NSApp.activationPolicy()))"
+            )
+            #endif
         }
 
         return granted ? .granted : .denied
     }
+
+    @MainActor
+    private static func bringRelevantWindowsToFront() {
+        let preferredTitles = ["Train your cough", "Preferences", "Welcome to Ahem"]
+        let windows = NSApp.windows.filter(\.isVisible)
+
+        let preferred = windows.first { window in
+            preferredTitles.contains(where: { window.title.localizedCaseInsensitiveContains($0) })
+        }
+
+        let target = preferred ?? windows.first
+        target?.makeKeyAndOrderFront(nil)
+        for window in windows {
+            window.orderFrontRegardless()
+        }
+
+        #if DEBUG
+        print(
+            "[Permission] Brought windows forward — "
+                + "preferred=\(preferred?.title ?? "nil") "
+                + "visibleCount=\(windows.count)"
+        )
+        #endif
+    }
+
+    #if DEBUG
+    @MainActor
+    private static func logRuntimeMicrophoneDiagnostics(callSite: String) {
+        let bundle = Bundle.main
+        let usageDescription = bundle.object(forInfoDictionaryKey: "NSMicrophoneUsageDescription") as? String
+        let infoPlistPath = bundle.bundleURL.appendingPathComponent("Contents/Info.plist").path
+        let infoPlistExists = FileManager.default.fileExists(atPath: infoPlistPath)
+
+        print("[Permission] Runtime diagnostics callSite=\(callSite)")
+        print("[Permission] bundleIdentifier=\(bundle.bundleIdentifier ?? "nil")")
+        print("[Permission] bundlePath=\(bundle.bundlePath)")
+        print("[Permission] executablePath=\(bundle.executablePath ?? "nil")")
+        print("[Permission] infoPlistPath=\(infoPlistPath) exists=\(infoPlistExists)")
+        print(
+            "[Permission] NSMicrophoneUsageDescription="
+                + (usageDescription.map { "\"\($0)\"" } ?? "MISSING")
+        )
+
+        if let entitlements = currentProcessEntitlements() {
+            let sandbox = entitlements["com.apple.security.app-sandbox"] as? Bool
+            let audioInput = entitlements["com.apple.security.device.audio-input"] as? Bool
+            print("[Permission] entitlement app-sandbox=\(sandbox.map(String.init(describing:)) ?? "absent")")
+            print("[Permission] entitlement audio-input=\(audioInput.map(String.init(describing:)) ?? "absent")")
+            print("[Permission] entitlementKeys=\(entitlements.keys.sorted().joined(separator: ", "))")
+        } else {
+            print("[Permission] entitlements=unavailable (codesign lookup failed or unsigned)")
+        }
+    }
+
+    private static func currentProcessEntitlements() -> [String: Any]? {
+        var staticCode: SecStaticCode?
+        let status = SecStaticCodeCreateWithPath(Bundle.main.bundleURL as CFURL, [], &staticCode)
+        guard status == errSecSuccess, let staticCode else { return nil }
+
+        var information: CFDictionary?
+        let copyStatus = SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &information
+        )
+        guard copyStatus == errSecSuccess,
+              let information = information as? [String: Any],
+              let entitlements = information[kSecCodeInfoEntitlementsDict as String] as? [String: Any] else {
+            return nil
+        }
+        return entitlements
+    }
+    #endif
+
+    #if DEBUG
+    private static func debugLabel(for status: AVAudioApplication.recordPermission) -> String {
+        switch status {
+        case .undetermined: return "undetermined(\(status.rawValue))"
+        case .denied: return "denied(\(status.rawValue))"
+        case .granted: return "granted(\(status.rawValue))"
+        @unknown default: return "unknown(\(status.rawValue))"
+        }
+    }
+
+    private static func debugLabel(for status: AVAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined: return "notDetermined(\(status.rawValue))"
+        case .restricted: return "restricted(\(status.rawValue))"
+        case .denied: return "denied(\(status.rawValue))"
+        case .authorized: return "authorized(\(status.rawValue))"
+        @unknown default: return "unknown(\(status.rawValue))"
+        }
+    }
+
+    private static func debugLabel(for policy: NSApplication.ActivationPolicy) -> String {
+        switch policy {
+        case .regular: return "regular"
+        case .accessory: return "accessory"
+        case .prohibited: return "prohibited"
+        @unknown default: return "unknown(\(policy.rawValue))"
+        }
+    }
+    #endif
 
     func startCapture() throws {
         if isTapInstalled && engine.isRunning {

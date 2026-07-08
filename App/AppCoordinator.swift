@@ -77,7 +77,10 @@ final class AppCoordinator: ObservableObject {
     }
 
     func handleOnboardingGetStarted() async {
-        let permission = await ensureMicrophonePermission(requestIfNeeded: true)
+        let permission = await ensureMicrophonePermission(
+            requestIfNeeded: true,
+            callSite: "Onboarding.GetStarted"
+        )
 
         switch permission {
         case .granted:
@@ -249,10 +252,17 @@ final class AppCoordinator: ObservableObject {
 
     func requestMicrophonePermission() {
         Task {
+            #if DEBUG
+            print("[Permission] Menu action: Grant Microphone Permission…")
+            #endif
             let permission = await ensureMicrophonePermission(
                 requestIfNeeded: true,
-                openSettingsIfDenied: true
+                openSettingsIfDenied: true,
+                callSite: "Menu.GrantMicrophonePermission"
             )
+            #if DEBUG
+            print("[Permission] Menu action result=\(permission)")
+            #endif
             if permission == .granted {
                 await beginAudioCapture()
             }
@@ -293,13 +303,33 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func startTrainingAfterPermissionCheck() async {
-        let permission = await ensureMicrophonePermission(requestIfNeeded: true)
-        guard permission == .granted else {
-            presentMicrophoneDeniedForTraining()
-            return
-        }
+        #if DEBUG
+        print("[Permission] Training start — checking microphone permission")
+        #endif
 
-        beginTrainingSession()
+        let permission = await ensureMicrophonePermission(
+            requestIfNeeded: true,
+            callSite: "Training.StartTraining"
+        )
+
+        #if DEBUG
+        print("[Permission] Training start — permission result=\(permission)")
+        #endif
+
+        switch permission {
+        case .granted:
+            beginTrainingSession()
+
+        case .denied:
+            presentMicrophoneDeniedForTraining()
+
+        case .notDetermined:
+            // Should not happen after a request. Avoid treating this as a hard denial.
+            appState.status = .microphonePermissionNeeded
+            appState.trainingUIPhase = .failed(
+                "Microphone permission could not be requested. Try Grant Microphone Permission… from the menu."
+            )
+        }
     }
 
     private func beginTrainingSession() {
@@ -330,19 +360,33 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    /// Returns the current microphone permission, requesting it when undetermined.
+    /// Returns the current microphone permission, requesting it when undetermined
+    /// and `requestIfNeeded` is true (user-initiated actions only).
     @discardableResult
     private func ensureMicrophonePermission(
         requestIfNeeded: Bool,
-        openSettingsIfDenied: Bool = false
+        openSettingsIfDenied: Bool = false,
+        callSite: String
     ) async -> MicrophonePermissionStatus {
-        switch AudioCaptureService.currentPermissionStatus() {
+        let initial = AudioCaptureService.currentPermissionStatus()
+        #if DEBUG
+        print(
+            "[Permission] ensureMicrophonePermission callSite=\(callSite) "
+                + "initial=\(initial) requestIfNeeded=\(requestIfNeeded) "
+                + "openSettingsIfDenied=\(openSettingsIfDenied)"
+        )
+        #endif
+
+        switch initial {
         case .granted:
             return .granted
 
         case .denied:
             appState.status = .microphonePermissionDenied
             if openSettingsIfDenied {
+                #if DEBUG
+                print("[Permission] Opening System Settings because permission is denied (callSite=\(callSite))")
+                #endif
                 openMicrophoneSystemSettings()
             }
             return .denied
@@ -350,29 +394,30 @@ final class AppCoordinator: ObservableObject {
         case .notDetermined:
             guard requestIfNeeded else {
                 appState.status = .microphonePermissionNeeded
+                #if DEBUG
+                print("[Permission] notDetermined — not requesting (callSite=\(callSite))")
+                #endif
                 return .notDetermined
             }
 
             appState.status = .microphonePermissionNeeded
-            NSApp.activate(ignoringOtherApps: true)
 
             #if DEBUG
-            print("[Permission] Requesting microphone permission")
+            print("[Permission] Status is notDetermined — calling native request API (callSite=\(callSite))")
             #endif
 
-            let result = await AudioCaptureService.requestPermission()
+            let result = await AudioCaptureService.requestPermission(callSite: callSite)
+
+            #if DEBUG
+            print("[Permission] Native request finished with result=\(result) (callSite=\(callSite))")
+            #endif
+
             switch result {
             case .granted:
-                #if DEBUG
-                print("[Permission] Microphone permission granted")
-                #endif
                 return .granted
 
             case .denied:
                 appState.status = .microphonePermissionDenied
-                #if DEBUG
-                print("[Permission] Microphone permission denied")
-                #endif
                 return .denied
 
             case .notDetermined:
@@ -403,26 +448,19 @@ final class AppCoordinator: ObservableObject {
         NSApplication.shared.terminate(nil)
     }
 
+    /// Observes current microphone permission and starts capture when already granted.
+    /// Never prompts — permission dialogs are user-action only.
     private func beginAudioCapture() async {
         #if DEBUG
-        print("[Startup] Checking microphone permission")
+        print("[Startup] Checking microphone permission (status only — will not request)")
         #endif
 
         switch AudioCaptureService.currentPermissionStatus() {
         case .notDetermined:
             appState.status = .microphonePermissionNeeded
-
-            if !onboardingStore.hasCompletedOnboarding {
-                #if DEBUG
-                print("[Startup] Onboarding pending — deferring microphone permission request")
-                #endif
-                return
-            }
-
-            let permission = await ensureMicrophonePermission(requestIfNeeded: true)
-            if permission == .granted {
-                startCapture()
-            }
+            #if DEBUG
+            print("[Startup] Microphone permission notDetermined — detection inactive until user grants")
+            #endif
 
         case .granted:
             startCapture()
