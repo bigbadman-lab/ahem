@@ -1,6 +1,5 @@
 import AppKit
 @preconcurrency import AVFoundation
-import Combine
 
 @MainActor
 final class AppCoordinator: ObservableObject {
@@ -34,11 +33,6 @@ final class AppCoordinator: ObservableObject {
     private var lastPauseCompletedAt: Date?
     private var isPausing = false
     private var isResuming = false
-    private var menuStatusCommitTask: Task<Void, Never>?
-    private let menuListeningCommitDebounce: TimeInterval = 0.35
-    private var heldMenuStatusDuringResume: AppStatus?
-    private var menuStatusCancellables = Set<AnyCancellable>()
-    private var didBindMenuDisplayStatus = false
 
     private let trainingRecordingWindowSeconds: TimeInterval = 5.0
     private let trainingCountdownSeconds = 5
@@ -50,7 +44,11 @@ final class AppCoordinator: ObservableObject {
 
     private var listeningStartupTask: Task<Void, Never>?
     private var listeningStartupGeneration: UInt64 = 0
-    private var menuTrainingLockActive = false
+    private var trainingModalActive = false
+    private var startingTimeoutTask: Task<Void, Never>?
+    private var trainingTimeoutTask: Task<Void, Never>?
+    private let startingTimeoutDuration: TimeInterval = 12
+    private let trainingTimeoutDuration: TimeInterval = 120
 
     private enum ListeningStartupReason: String {
         case startup
@@ -85,118 +83,121 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    private func bindMenuDisplayStatusIfNeeded() {
-        guard !didBindMenuDisplayStatus else { return }
-        didBindMenuDisplayStatus = true
+    // MARK: - State machine (single owner of appState.status)
 
-        // Seed current display from the current stable status.
-        appState.menuDisplayStatus = appState.status
+    @discardableResult
+    private func transition(
+        to newStatus: AppStatus,
+        reason: String,
+        options: AppStateMachine.Options = .init()
+    ) -> Bool {
+        let current = appState.status
 
-        appState.$status
-            .receive(on: RunLoop.main)
-            .sink { [weak self] newStatus in
-                self?.syncMenuDisplayStatus(with: newStatus)
-            }
-            .store(in: &menuStatusCancellables)
-    }
-
-    private func syncMenuDisplayStatus(with newStatus: AppStatus) {
-        menuStatusCommitTask?.cancel()
-        menuStatusCommitTask = nil
-
-        if menuTrainingLockActive {
-            switch newStatus {
-            case .training, .trainingComplete, .trainingFailed:
-                commitMenuDisplayStatus(newStatus)
-            default:
-                #if DEBUG
-                print("[MenuStatus] Status update suppressed during training: \(newStatus)")
-                #endif
-            }
-            return
+        if trainingModalActive,
+           !options.force,
+           !allowsTransitionDuringTraining(from: current, to: newStatus, options: options) {
+            AppStateMachine.logBlocked(
+                from: current,
+                to: newStatus,
+                reason: "training modal active — \(reason)"
+            )
+            return false
         }
 
-        if isResuming {
-            // Hold a stable paused presentation until resume finishes.
-            let held = heldMenuStatusDuringResume ?? .paused
-            if appState.menuDisplayStatus != held {
-                appState.menuDisplayStatus = held
-                #if DEBUG
-                print("[MenuStatus] Holding previous stable status during resume")
-                #endif
-            }
-            return
+        guard AppStateMachine.isAllowed(from: current, to: newStatus, options: options) else {
+            AppStateMachine.logBlocked(from: current, to: newStatus, reason: reason)
+            return false
         }
 
-        switch newStatus {
-        case .listening, .panicDetected:
-            // Debounce brief listening flashes (e.g. attach-then-retry) so the menu doesn't flicker.
-            menuStatusCommitTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(self?.menuListeningCommitDebounce ?? 0.35))
-                guard !Task.isCancelled, let self, !self.isResuming else { return }
-                guard self.appState.status == .listening || self.appState.status == .panicDetected else {
-                    return
-                }
-                self.commitMenuDisplayStatus(.listening)
-            }
+        AppStateMachine.logTransition(from: current, to: newStatus, reason: reason)
+        appState.status = newStatus
+        handleStatusSideEffects(from: current, to: newStatus)
+        return true
+    }
 
-        case .paused:
-            commitMenuDisplayStatus(.paused)
+    private func allowsTransitionDuringTraining(
+        from: AppStatus,
+        to: AppStatus,
+        options: AppStateMachine.Options
+    ) -> Bool {
+        let fromPhase = AppStateMachine.phase(of: from)
+        let toPhase = AppStateMachine.phase(of: to)
 
-        case .starting:
-            commitMenuDisplayStatus(newStatus)
+        if fromPhase == .training, toPhase == .training { return true }
+        if toPhase == .trainingFailed { return true }
+        if toPhase == .trainingComplete { return true }
+        if options.postTrainingExit, toPhase == .starting || toPhase == .listening { return true }
+        return false
+    }
 
-        case .needsTraining, .training, .trainingComplete, .trainingFailed,
-             .microphonePermissionNeeded, .microphonePermissionDenied, .audioError:
-            commitMenuDisplayStatus(newStatus)
+    private func handleStatusSideEffects(from: AppStatus, to: AppStatus) {
+        if AppStateMachine.phase(of: from) == .starting {
+            startingTimeoutTask?.cancel()
+            startingTimeoutTask = nil
+        }
+
+        if AppStateMachine.phase(of: to) == .starting {
+            scheduleStartingTimeout()
+        }
+
+        if AppStateMachine.phase(of: to) == .listening {
+            endTrainingModal()
+        }
+
+        if AppStateMachine.phase(of: to) == .trainingFailed {
+            endTrainingModal()
         }
     }
 
-    private func beginTrainingMenuLock() {
-        menuTrainingLockActive = true
-        #if DEBUG
-        print("[Training] UI locked to training state")
-        #endif
-        commitMenuDisplayStatus(.training(sample: 1, total: 3))
+    private func scheduleStartingTimeout() {
+        startingTimeoutTask?.cancel()
+        startingTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(self?.startingTimeoutDuration ?? 12))
+            guard let self, !Task.isCancelled else { return }
+            guard case .starting = self.appState.status else { return }
+
+            AppStateMachine.logTimeout("starting timed out", reason: "listening startup exceeded timeout")
+            self.applyListeningRecoveryFailure(
+                self.listeningStartupError(code: 7, message: "Listening startup timed out."),
+                mode: .audioError
+            )
+        }
     }
 
-    private func endTrainingMenuLock() {
-        guard menuTrainingLockActive else { return }
-        menuTrainingLockActive = false
+    private func beginTrainingModal(reason: String) {
+        trainingModalActive = true
+        cancelListeningStartup()
+        scheduleTrainingTimeout()
+        _ = transition(
+            to: .training(sample: 1, total: 3),
+            reason: reason,
+            options: .init(userInitiated: true, force: true)
+        )
+    }
+
+    private func endTrainingModal() {
+        guard trainingModalActive else { return }
+        trainingModalActive = false
+        trainingTimeoutTask?.cancel()
+        trainingTimeoutTask = nil
+    }
+
+    private func scheduleTrainingTimeout() {
+        trainingTimeoutTask?.cancel()
+        trainingTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(self?.trainingTimeoutDuration ?? 120))
+            guard let self, !Task.isCancelled else { return }
+            guard self.trainingModalActive || self.isTraining else { return }
+
+            AppStateMachine.logTimeout("training timed out", reason: "training session exceeded timeout")
+            self.failTraining("Training timed out. Please try again.")
+        }
     }
 
     private func cancelListeningStartup() {
         listeningStartupTask?.cancel()
         listeningStartupTask = nil
         listeningStartupGeneration &+= 1
-    }
-
-    private func commitMenuDisplayStatus(_ status: AppStatus) {
-        guard appState.menuDisplayStatus != status else { return }
-        appState.menuDisplayStatus = status
-        #if DEBUG
-        switch status {
-        case .listening, .panicDetected:
-            print("[MenuStatus] Display status updated to listening")
-        case .paused:
-            print("[MenuStatus] Display status updated to paused")
-        default:
-            break
-        }
-        #endif
-    }
-
-    private func beginResumeMenuHold() {
-        heldMenuStatusDuringResume = .paused
-        commitMenuDisplayStatus(.paused)
-        #if DEBUG
-        print("[MenuStatus] Holding previous stable status during resume")
-        #endif
-    }
-
-    private func endResumeMenuHoldAndCommit() {
-        heldMenuStatusDuringResume = nil
-        syncMenuDisplayStatus(with: appState.status)
     }
 
     var isTrainingSessionActive: Bool {
@@ -277,8 +278,7 @@ final class AppCoordinator: ObservableObject {
                 // First-run / incomplete setup: keep the onboarding shell and go to training welcome.
                 appState.onboardingPhase = .training
                 appState.trainingUIPhase = .welcome
-                beginTrainingMenuLock()
-                appState.status = .training(sample: 1, total: 3)
+                beginTrainingModal(reason: "startup onboarding training welcome")
                 appState.setupPresentationRequest = .onboarding
             }
 
@@ -317,11 +317,11 @@ final class AppCoordinator: ObservableObject {
 
         case .denied:
             appState.onboardingPhase = .permissionDenied
-            appState.status = .microphonePermissionDenied
+            transition(to: .microphonePermissionDenied, reason: "onboarding permission denied")
 
         case .notDetermined:
             appState.onboardingPhase = .permissionDenied
-            appState.status = .microphonePermissionNeeded
+            transition(to: .microphonePermissionNeeded, reason: "onboarding permission not determined")
         }
     }
 
@@ -375,8 +375,7 @@ final class AppCoordinator: ObservableObject {
     private func enterOnboardingTrainingWelcome() {
         appState.onboardingPhase = .training
         appState.trainingUIPhase = .welcome
-        beginTrainingMenuLock()
-        appState.status = .training(sample: 1, total: 3)
+        beginTrainingModal(reason: "onboarding enter training welcome")
 
         #if DEBUG
         print("[Onboarding] Listening deferred — setup/training in progress")
@@ -416,9 +415,8 @@ final class AppCoordinator: ObservableObject {
 
     func prepareTrainingUI() {
         appState.trainingUIPhase = .welcome
-        if !menuTrainingLockActive {
-            beginTrainingMenuLock()
-            appState.status = .training(sample: 1, total: 3)
+        if !trainingModalActive {
+            beginTrainingModal(reason: "prepare training UI")
         }
     }
 
@@ -481,7 +479,7 @@ final class AppCoordinator: ObservableObject {
 
         resetTrainingInputLevel()
         dismissTrainingUI()
-        endTrainingMenuLock()
+        endTrainingModal()
 
         #if DEBUG
         print("[Training] Training cancellation complete")
@@ -517,9 +515,8 @@ final class AppCoordinator: ObservableObject {
         panicDetector = nil
         audioPipeline.setDetector(nil)
         audioCaptureService.stopCapture()
-        appState.status = .paused
+        _ = transition(to: .paused, reason: "user paused listening")
         lastPauseCompletedAt = Date()
-        endResumeMenuHoldAndCommit()
 
         #if DEBUG
         print("[Listening] Detection paused")
@@ -546,7 +543,6 @@ final class AppCoordinator: ObservableObject {
         print("[Listening] Resume requested")
         #endif
 
-        beginResumeMenuHold()
         isResuming = true
         Task { [weak self] in
             await self?.resumeListeningAfterPauseGuard()
@@ -556,7 +552,6 @@ final class AppCoordinator: ObservableObject {
     private func resumeListeningAfterPauseGuard() async {
         defer {
             isResuming = false
-            endResumeMenuHoldAndCommit()
         }
 
         guard appState.status == .paused else {
@@ -590,15 +585,15 @@ final class AppCoordinator: ObservableObject {
         case .granted:
             break
         case .notDetermined:
-            appState.status = .microphonePermissionNeeded
+            transition(to: .microphonePermissionNeeded, reason: "resume blocked — permission not determined")
             return
         case .denied:
-            appState.status = .microphonePermissionDenied
+            transition(to: .microphonePermissionDenied, reason: "resume blocked — permission denied")
             return
         }
 
         guard panicFingerprintStore.load() != nil else {
-            appState.status = .needsTraining
+            transition(to: .needsTraining, reason: "resume blocked — no fingerprint")
             return
         }
 
@@ -657,16 +652,20 @@ final class AppCoordinator: ObservableObject {
         }
 
         guard panicFingerprintStore.load() != nil else {
-            if !menuTrainingLockActive {
-                appState.status = .needsTraining
+            if !trainingModalActive {
+                transition(to: .needsTraining, reason: "listening startup — no fingerprint")
             }
             return
         }
 
         guard AudioCaptureService.currentPermissionStatus() == .granted else { return }
 
-        if reason != .resume, !menuTrainingLockActive {
-            appState.status = .starting
+        if !trainingModalActive {
+            _ = transition(
+                to: .starting,
+                reason: "listening startup (\(reason.rawValue))",
+                options: .init(postTrainingExit: reason == .postTraining)
+            )
         }
 
         for attempt in 1...2 {
@@ -716,8 +715,11 @@ final class AppCoordinator: ObservableObject {
                 print("[AppStartup] Detector attached")
                 #endif
 
-                endTrainingMenuLock()
-                appState.status = .listening
+                _ = transition(
+                    to: .listening,
+                    reason: "listening ready (\(reason.rawValue))",
+                    options: .init(postTrainingExit: reason == .postTraining)
+                )
 
                 #if DEBUG
                 print("[AppStartup] Listening ready")
@@ -760,17 +762,25 @@ final class AppCoordinator: ObservableObject {
         clearDetectionForListeningRestart()
         audioCaptureService.stopCapture()
         refreshLastTrainedDate()
-        endTrainingMenuLock()
+        endTrainingModal()
 
         switch mode {
         case .paused:
-            appState.status = .paused
+            _ = transition(
+                to: .paused,
+                reason: "resume listening failed: \(error.localizedDescription)",
+                options: .init(force: true)
+            )
             #if DEBUG
             print("[Listening] ResumeListening failed — \(error.localizedDescription); status restored to paused")
             #endif
 
         case .audioError:
-            appState.status = .audioError(error.localizedDescription)
+            _ = transition(
+                to: .audioError(error.localizedDescription),
+                reason: "listening startup failed: \(error.localizedDescription)",
+                options: .init(force: true)
+            )
             #if DEBUG
             print("[AppStartup] Audio Error shown after retry failure")
             #endif
@@ -984,8 +994,6 @@ final class AppCoordinator: ObservableObject {
         guard !didStart else { return }
         didStart = true
 
-        bindMenuDisplayStatusIfNeeded()
-
         NSApplication.shared.setActivationPolicy(.accessory)
 
         #if DEBUG
@@ -1041,8 +1049,10 @@ final class AppCoordinator: ObservableObject {
             presentMicrophoneDeniedForTraining()
 
         case .notDetermined:
-            // Should not happen after a request. Avoid treating this as a hard denial.
-            appState.status = .microphonePermissionNeeded
+            transition(
+                to: .microphonePermissionNeeded,
+                reason: "training start permission request failed"
+            )
             appState.trainingUIPhase = .failed(
                 "Microphone permission could not be requested. Try Grant Microphone Permission… from the menu."
             )
@@ -1058,13 +1068,11 @@ final class AppCoordinator: ObservableObject {
 
         cancelListeningStartup()
         stopListeningCaptureIfNeeded(reason: "training session starting")
-        beginTrainingMenuLock()
-        appState.status = .training(sample: 1, total: 3)
+        beginTrainingModal(reason: "training session started")
 
         do {
             try prepareAudioCaptureForTraining()
         } catch {
-            endTrainingMenuLock()
             failTraining(error.localizedDescription)
             return
         }
@@ -1138,7 +1146,7 @@ final class AppCoordinator: ObservableObject {
             return .granted
 
         case .denied:
-            appState.status = .microphonePermissionDenied
+            transition(to: .microphonePermissionDenied, reason: "permission denied (\(callSite))")
             if openSettingsIfDenied {
                 #if DEBUG
                 print("[Permission] Opening System Settings because permission is denied (callSite=\(callSite))")
@@ -1149,14 +1157,14 @@ final class AppCoordinator: ObservableObject {
 
         case .notDetermined:
             guard requestIfNeeded else {
-                appState.status = .microphonePermissionNeeded
+                transition(to: .microphonePermissionNeeded, reason: "permission not determined (\(callSite))")
                 #if DEBUG
                 print("[Permission] notDetermined — not requesting (callSite=\(callSite))")
                 #endif
                 return .notDetermined
             }
 
-            appState.status = .microphonePermissionNeeded
+            transition(to: .microphonePermissionNeeded, reason: "requesting microphone permission (\(callSite))")
 
             #if DEBUG
             print("[Permission] Status is notDetermined — calling native request API (callSite=\(callSite))")
@@ -1173,18 +1181,18 @@ final class AppCoordinator: ObservableObject {
                 return .granted
 
             case .denied:
-                appState.status = .microphonePermissionDenied
+                transition(to: .microphonePermissionDenied, reason: "permission denied after request (\(callSite))")
                 return .denied
 
             case .notDetermined:
-                appState.status = .microphonePermissionNeeded
+                transition(to: .microphonePermissionNeeded, reason: "permission still not determined (\(callSite))")
                 return .notDetermined
             }
         }
     }
 
     private func presentMicrophoneDeniedForTraining() {
-        appState.status = .microphonePermissionDenied
+        transition(to: .microphonePermissionDenied, reason: "training denied — microphone permission")
         appState.trainingUIPhase = .failed(
             "Microphone access is required to train your cough.\n\nEnable Ahem in System Settings → Privacy & Security → Microphone."
         )
@@ -1227,21 +1235,21 @@ final class AppCoordinator: ObservableObject {
 
         switch permission {
         case .notDetermined:
-            appState.status = .microphonePermissionNeeded
+            transition(to: .microphonePermissionNeeded, reason: "startup — microphone permission not determined")
             #if DEBUG
             print("[AppStartup] Microphone permission notDetermined — detection inactive until user grants")
             #endif
 
         case .granted:
             guard panicFingerprintStore.load() != nil else {
-                appState.status = .needsTraining
+                transition(to: .needsTraining, reason: "startup — fingerprint missing")
                 return
             }
 
             scheduleListeningStartup(reason: .startup, failureMode: .audioError)
 
         case .denied:
-            appState.status = .microphonePermissionDenied
+            transition(to: .microphonePermissionDenied, reason: "startup — microphone permission denied")
             #if DEBUG
             print("[AppStartup] Startup failed: microphone permission denied")
             #endif
@@ -1275,14 +1283,14 @@ final class AppCoordinator: ObservableObject {
         logBrowserHidingResult(hideResult)
 
         detectionResetTask?.cancel()
-        appState.status = .panicDetected
+        _ = transition(to: .panicDetected, reason: "cough detected")
 
         detectionResetTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(self?.panicDetectedDisplayDuration ?? 1.0))
             guard !Task.isCancelled else { return }
             guard let self else { return }
             if case .panicDetected = self.appState.status {
-                self.appState.status = .listening
+                _ = self.transition(to: .listening, reason: "panic display complete")
             }
         }
     }
@@ -1344,7 +1352,10 @@ final class AppCoordinator: ObservableObject {
         for sampleIndex in 1...3 {
             if Task.isCancelled { return }
 
-            appState.status = .training(sample: sampleIndex, total: 3)
+            _ = transition(
+                to: .training(sample: sampleIndex, total: 3),
+                reason: "training sample \(sampleIndex)/3"
+            )
 
             #if DEBUG
             print("[Training] Sample \(sampleIndex)/3 started")
@@ -1389,7 +1400,7 @@ final class AppCoordinator: ObservableObject {
                 return
             }
 
-            appState.status = .trainingComplete
+            _ = transition(to: .trainingComplete, reason: "training samples saved")
             appState.trainingUIPhase = .succeeded
 
             #if DEBUG
@@ -1422,8 +1433,8 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func failTraining(_ message: String) {
-        endTrainingMenuLock()
-        appState.status = .trainingFailed(message)
+        endTrainingModal()
+        _ = transition(to: .trainingFailed(message), reason: message, options: .init(force: true))
         appState.trainingUIPhase = .failed(message)
     }
 

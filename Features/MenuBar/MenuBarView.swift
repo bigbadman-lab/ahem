@@ -13,7 +13,7 @@ struct MenuBarView: View {
     }
 
     private var presentation: MenuBarPresentation {
-        appState.menuDisplayStatus.menuPresentation(
+        appState.status.menuPresentation(
             hasFingerprint: coordinator.hasStoredFingerprint,
             isTrainingSessionActive: coordinator.isTrainingSessionActive
         )
@@ -166,7 +166,7 @@ struct MenuBarStatusLabel: View {
     }
 
     private var menuBarAccessibilityLabel: String {
-        switch appState.menuDisplayStatus {
+        switch appState.status {
         case .listening, .panicDetected:
             return "Ahem — Ready"
         case .paused:

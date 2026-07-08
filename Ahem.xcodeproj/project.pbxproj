@@ -11,6 +11,7 @@
 		A1B2C3D40100000000000002 /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000002 /* AppCoordinator.swift */; };
 		A1B2C3D40100000000000003 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000003 /* MenuBarView.swift */; };
 		A1B2C3D40100000000000005 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000005 /* AppState.swift */; };
+		A1B2C3D40100000000000020 /* AppStateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000020 /* AppStateMachine.swift */; };
 		A1B2C3D40100000000000006 /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000006 /* AudioCaptureService.swift */; };
 		A1B2C3D40100000000000007 /* PanicFingerprint.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000007 /* PanicFingerprint.swift */; };
 		A1B2C3D40100000000000008 /* PanicFingerprintService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000008 /* PanicFingerprintService.swift */; };
@@ -43,6 +44,7 @@
 		A1B2C3D40200000000000002 /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
 		A1B2C3D40200000000000003 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
 		A1B2C3D40200000000000005 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		A1B2C3D40200000000000020 /* AppStateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStateMachine.swift; sourceTree = "<group>"; };
 		A1B2C3D40200000000000006 /* AudioCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureService.swift; sourceTree = "<group>"; };
 		A1B2C3D40200000000000007 /* PanicFingerprint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanicFingerprint.swift; sourceTree = "<group>"; };
 		A1B2C3D40200000000000008 /* PanicFingerprintService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanicFingerprintService.swift; sourceTree = "<group>"; };
@@ -103,6 +105,7 @@
 				A1B2C3D40200000000000001 /* AhemApp.swift */,
 				A1B2C3D40200000000000002 /* AppCoordinator.swift */,
 				A1B2C3D40200000000000005 /* AppState.swift */,
+				A1B2C3D40200000000000020 /* AppStateMachine.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -289,6 +292,7 @@
 				A1B2C3D40100000000000002 /* AppCoordinator.swift in Sources */,
 				A1B2C3D40100000000000003 /* MenuBarView.swift in Sources */,
 				A1B2C3D40100000000000005 /* AppState.swift in Sources */,
+				A1B2C3D40100000000000020 /* AppStateMachine.swift in Sources */,
 				A1B2C3D40100000000000006 /* AudioCaptureService.swift in Sources */,
 				A1B2C3D40100000000000007 /* PanicFingerprint.swift in Sources */,
 				A1B2C3D40100000000000008 /* PanicFingerprintService.swift in Sources */,

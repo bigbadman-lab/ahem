@@ -198,8 +198,6 @@ extension AppStatus {
 
 final class AppState: ObservableObject {
     @Published var status: AppStatus = .starting
-    /// User-facing menu status. May lag/`hold` behind `status` during resume retries to avoid flicker.
-    @Published var menuDisplayStatus: AppStatus = .starting
     @Published var onboardingPhase: OnboardingPhase = .idle
     @Published var trainingUIPhase: TrainingUIPhase = .idle
     @Published var trainingInputLevel: Double = 0
