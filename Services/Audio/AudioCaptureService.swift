@@ -33,18 +33,19 @@ final class AudioCaptureService {
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
     var onError: ((String) -> Void)?
 
-    private let engine = AVAudioEngine()
+    // Lazy: do not create AVAudioEngine / touch input hardware until permission is granted.
+    private var engine: AVAudioEngine?
     private let logInterval: TimeInterval = 3
     private var isTapInstalled = false
     private var bufferCount = 0
     private var lastLogDate: Date?
 
     var isCapturing: Bool {
-        isTapInstalled && engine.isRunning
+        isTapInstalled && (engine?.isRunning ?? false)
     }
 
     var inputSampleRate: Double? {
-        guard isTapInstalled else { return nil }
+        guard isTapInstalled, let engine else { return nil }
         let sampleRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
         guard sampleRate.isFinite, sampleRate > 0 else { return nil }
         return sampleRate
@@ -52,30 +53,28 @@ final class AudioCaptureService {
 
     static func currentPermissionStatus() -> MicrophonePermissionStatus {
         let audioAppStatus = AVAudioApplication.shared.recordPermission
-        let captureStatus = AVCaptureDevice.authorizationStatus(for: .audio)
 
         #if DEBUG
+        let captureStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         print(
             "[Permission] Status check — "
                 + "AVAudioApplication.recordPermission=\(debugLabel(for: audioAppStatus)) "
-                + "AVCaptureDevice.audio=\(debugLabel(for: captureStatus))"
+                + "(source of truth)"
+        )
+        print(
+            "[Permission] diagnostic only — "
+                + "AVCaptureDevice.audio=\(debugLabel(for: captureStatus)) "
+                + "(not used for decisions)"
         )
         #endif
 
-        // Prefer the capture-device status for TCC prompt behaviour on macOS.
-        // Fall back to AVAudioApplication when capture status is unexpected.
-        switch captureStatus {
-        case .notDetermined:
-            return .notDetermined
-        case .authorized:
-            return .granted
-        case .denied, .restricted:
-            return .denied
-        @unknown default:
-            break
-        }
+        return mapRecordPermission(audioAppStatus)
+    }
 
-        switch audioAppStatus {
+    private static func mapRecordPermission(
+        _ status: AVAudioApplication.recordPermission
+    ) -> MicrophonePermissionStatus {
+        switch status {
         case .undetermined:
             return .notDetermined
         case .granted:
@@ -84,13 +83,17 @@ final class AudioCaptureService {
             return .denied
         @unknown default:
             #if DEBUG
-            print("[Permission] Unknown AVAudioApplication.recordPermission rawValue=\(audioAppStatus.rawValue) — treating as notDetermined")
+            print(
+                "[Permission] Unknown AVAudioApplication.recordPermission "
+                    + "rawValue=\(status.rawValue) — treating as notDetermined"
+            )
             #endif
             return .notDetermined
         }
     }
 
     /// Requests microphone permission when undetermined.
+    /// Uses AVAudioApplication only — appropriate for AVAudioEngine-based recording.
     /// Temporarily becomes a regular, frontmost app so macOS can present the system dialog.
     /// - Parameter callSite: DEBUG label identifying the explicit user action that triggered the request.
     @MainActor
@@ -139,26 +142,37 @@ final class AudioCaptureService {
                 + "mainWindow=\(NSApp.mainWindow?.title ?? "nil")"
         )
         logRuntimeMicrophoneDiagnostics(callSite: callSite)
-        print("[Permission] Calling AVCaptureDevice.requestAccess(for: .audio) callSite=\(callSite)")
+        print("[Permission] Calling AVAudioApplication.requestRecordPermission callSite=\(callSite)")
         #endif
 
-        let granted = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            AVCaptureDevice.requestAccess(for: .audio) { granted in
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            AVAudioApplication.requestRecordPermission { _ in
                 Task { @MainActor in
                     #if DEBUG
-                    print("[Permission] requestAccess callback returned granted=\(granted) callSite=\(callSite)")
+                    let callbackStatus = AVAudioApplication.shared.recordPermission
+                    print(
+                        "[Permission] requestRecordPermission callback — "
+                            + "AVAudioApplication=\(debugLabel(for: callbackStatus)) "
+                            + "callSite=\(callSite)"
+                    )
                     #endif
-                    continuation.resume(returning: granted)
+                    continuation.resume()
                 }
             }
         }
 
+        let result = mapRecordPermission(AVAudioApplication.shared.recordPermission)
+
         #if DEBUG
-        print("[Permission] AVCaptureDevice.requestAccess finished granted=\(granted) callSite=\(callSite)")
+        let captureDiagnostic = AVCaptureDevice.authorizationStatus(for: .audio)
         print(
-            "[Permission] Post-request statuses — "
-                + "AVAudioApplication=\(debugLabel(for: AVAudioApplication.shared.recordPermission)) "
-                + "AVCaptureDevice=\(debugLabel(for: AVCaptureDevice.authorizationStatus(for: .audio)))"
+            "[Permission] Post-request AVAudioApplication=\(debugLabel(for: AVAudioApplication.shared.recordPermission)) "
+                + "mapped=\(result) callSite=\(callSite)"
+        )
+        print(
+            "[Permission] diagnostic only — "
+                + "AVCaptureDevice.audio=\(debugLabel(for: captureDiagnostic)) "
+                + "(not used for decisions)"
         )
         #endif
 
@@ -175,7 +189,7 @@ final class AudioCaptureService {
             #endif
         }
 
-        return granted ? .granted : .denied
+        return result
     }
 
     @MainActor
@@ -229,6 +243,13 @@ final class AudioCaptureService {
         } else {
             print("[Permission] entitlements=unavailable (codesign lookup failed or unsigned)")
         }
+
+        let captureDiagnostic = AVCaptureDevice.authorizationStatus(for: .audio)
+        print(
+            "[Permission] diagnostic only — "
+                + "AVCaptureDevice.audio=\(debugLabel(for: captureDiagnostic)) "
+                + "(not used for decisions)"
+        )
     }
 
     private static func currentProcessEntitlements() -> [String: Any]? {
@@ -282,7 +303,7 @@ final class AudioCaptureService {
     #endif
 
     func startCapture() throws {
-        if isTapInstalled && engine.isRunning {
+        if isTapInstalled && (engine?.isRunning ?? false) {
             #if DEBUG
             print("[AudioCapture] Audio engine already running — start ignored")
             #endif
@@ -294,10 +315,19 @@ final class AudioCaptureService {
         }
 
         #if DEBUG
+        print("[AudioCapture] Creating AVAudioEngine (permission granted path)")
+        #endif
+        engine = AVAudioEngine()
+
+        #if DEBUG
         print("[AudioCapture] Starting audio engine")
         #endif
 
+        guard let engine else { return }
         let inputNode = engine.inputNode
+        #if DEBUG
+        print("[AudioCapture] Accessing inputNode.outputFormat")
+        #endif
         let format = inputNode.outputFormat(forBus: 0)
         guard format.sampleRate.isFinite,
               format.sampleRate > 0,
@@ -308,6 +338,9 @@ final class AudioCaptureService {
             throw AudioCaptureError.invalidInputFormat
         }
 
+        #if DEBUG
+        print("[AudioCapture] Installing input tap (onBus=0, bufferSize=1024)")
+        #endif
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.handleBuffer(buffer)
         }
@@ -330,7 +363,7 @@ final class AudioCaptureService {
     }
 
     func stopCapture() {
-        guard isTapInstalled || engine.isRunning else {
+        guard isTapInstalled || (engine?.isRunning ?? false) else {
             #if DEBUG
             print("[AudioCapture] Audio engine already stopped — stop ignored")
             #endif
@@ -342,9 +375,10 @@ final class AudioCaptureService {
         #endif
 
         removeTapIfNeeded()
-        if engine.isRunning {
-            engine.stop()
+        if engine?.isRunning == true {
+            engine?.stop()
         }
+        engine = nil
         bufferCount = 0
         lastLogDate = nil
 
@@ -355,7 +389,11 @@ final class AudioCaptureService {
 
     private func removeTapIfNeeded() {
         guard isTapInstalled else { return }
+        guard let engine else { return }
 
+        #if DEBUG
+        print("[AudioCapture] Removing input tap (onBus=0)")
+        #endif
         engine.inputNode.removeTap(onBus: 0)
         isTapInstalled = false
     }

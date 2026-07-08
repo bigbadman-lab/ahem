@@ -64,6 +64,7 @@
 		A1B2C3D4020000000000001A /* AhemAppIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AhemAppIconView.swift; sourceTree = "<group>"; };
 		A1B2C3D4020000000000001B /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		A1B2C3D4020000000000001C /* OnboardingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingStore.swift; sourceTree = "<group>"; };
+		A1B2C3D4020000000000001D /* Ahem.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Ahem.entitlements; sourceTree = "<group>"; };
 		A1B2C3D40300000000000001 /* Ahem.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ahem.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -87,6 +88,7 @@
 				A1B2C3D40500000000000005 /* Models */,
 				A1B2C3D40500000000000006 /* Utilities */,
 				A1B2C3D40200000000000018 /* Assets.xcassets */,
+				A1B2C3D4020000000000001D /* Ahem.entitlements */,
 				A1B2C3D40500000000000008 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -413,6 +415,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Ahem.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -422,7 +425,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_LSUIElement = YES;
+				INFOPLIST_KEY_LSUIElement = NO;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Ahem. All rights reserved.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Ahem uses your microphone to learn your cough. Audio never leaves your Mac.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -441,6 +444,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Ahem.entitlements;
 				CODE_SIGN_IDENTITY = "Developer ID Application";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
