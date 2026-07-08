@@ -9,6 +9,12 @@ enum OnboardingPhase: Equatable {
     case completion
 }
 
+/// TEMP-friendly launch presentation request for setup windows.
+enum SetupPresentationRequest: Equatable {
+    case onboarding
+    case training
+}
+
 enum TrainingUIPhase: Equatable {
     case idle
     case welcome
@@ -157,4 +163,6 @@ final class AppState: ObservableObject {
     @Published var lastTrainedAt: Date?
     // TEMP: Release diagnostics — remove when Debug vs Release comparison is complete.
     @Published var diagnosticsCopyConfirmation: String?
+    /// One-shot launch request to open setup UI; cleared after presentation.
+    @Published var setupPresentationRequest: SetupPresentationRequest?
 }

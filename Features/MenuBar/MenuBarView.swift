@@ -39,12 +39,8 @@ struct MenuBarView: View {
             }
         }
         .padding(.horizontal, AhemLayout.menuHorizontalPadding)
-        .onAppear {
-            coordinator.start()
-            if coordinator.shouldPresentOnboarding {
-                presentOnboarding()
-            }
-        }
+        // Startup is triggered from MenuBarStatusLabel (always present).
+        // Do not present setup windows from menu open — that made first launch wait for a click.
     }
 
     @ViewBuilder
@@ -122,24 +118,110 @@ struct MenuBarView: View {
     }
 
     private func presentTraining() {
-        NSApp.activate(ignoringOtherApps: true)
+        bringAppForwardForSetupWindow()
         coordinator.prepareTrainingUI()
         openWindow(id: TrainingWindowID.value)
     }
 
-    private func presentOnboarding() {
-        NSApp.activate(ignoringOtherApps: true)
-        coordinator.prepareOnboarding()
-        openWindow(id: OnboardingWindowID.value)
-    }
-
     private func presentPreferences() {
-        NSApp.activate(ignoringOtherApps: true)
+        bringAppForwardForSetupWindow()
         openWindow(id: PreferencesWindowID.value)
     }
 
     private func presentAbout() {
-        NSApp.activate(ignoringOtherApps: true)
+        bringAppForwardForSetupWindow()
         openWindow(id: AboutWindowID.value)
+    }
+}
+
+/// Always-visible menu bar label. Starts the coordinator at launch and presents
+/// setup windows without requiring the user to open the menu.
+struct MenuBarStatusLabel: View {
+    @ObservedObject private var appState: AppState
+    let coordinator: AppCoordinator
+
+    @Environment(\.openWindow) private var openWindow
+
+    init(coordinator: AppCoordinator) {
+        self.coordinator = coordinator
+        _appState = ObservedObject(wrappedValue: coordinator.appState)
+    }
+
+    var body: some View {
+        Image("MenuBarIcon")
+            .accessibilityLabel("Ahem")
+            .onAppear {
+                coordinator.start()
+                presentPendingStartupSetupIfNeeded()
+            }
+            .onChange(of: appState.setupPresentationRequest) { _, request in
+                guard request != nil else { return }
+                presentPendingStartupSetupIfNeeded()
+            }
+    }
+
+    private func presentPendingStartupSetupIfNeeded() {
+        guard let request = appState.setupPresentationRequest else { return }
+        guard !coordinator.didConsumeStartupSetupPresentation else {
+            #if DEBUG
+            print("[Onboarding] Already presented — skipping duplicate")
+            #endif
+            appState.setupPresentationRequest = nil
+            return
+        }
+
+        bringAppForwardForSetupWindow()
+
+        switch request {
+        case .onboarding:
+            if appState.onboardingPhase == .idle {
+                coordinator.prepareOnboarding()
+            }
+            if let existing = NSApp.windows.first(where: {
+                $0.title.localizedCaseInsensitiveContains("Welcome to Ahem") && $0.isVisible
+            }) {
+                #if DEBUG
+                print("[Onboarding] Already presented — bringing existing window forward")
+                #endif
+                existing.makeKeyAndOrderFront(nil)
+            } else {
+                openWindow(id: OnboardingWindowID.value)
+            }
+
+        case .training:
+            if appState.trainingUIPhase == .idle {
+                coordinator.prepareTrainingUI()
+            }
+            if let existing = NSApp.windows.first(where: {
+                $0.title.localizedCaseInsensitiveContains("Train your cough") && $0.isVisible
+            }) {
+                #if DEBUG
+                print("[Onboarding] Already presented — bringing existing training window forward")
+                #endif
+                existing.makeKeyAndOrderFront(nil)
+            } else {
+                openWindow(id: TrainingWindowID.value)
+            }
+        }
+
+        coordinator.markStartupSetupPresented()
+    }
+}
+
+@MainActor
+private func bringAppForwardForSetupWindow() {
+    // Accessory / LSUIElement apps need a brief activation so setup windows appear in front.
+    let previousPolicy = NSApp.activationPolicy()
+    if previousPolicy != .regular {
+        NSApp.setActivationPolicy(.regular)
+    }
+    NSApp.activate(ignoringOtherApps: true)
+
+    // Restore accessory shortly after the window is ordered front.
+    if previousPolicy != .regular {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            NSApp.setActivationPolicy(.accessory)
+        }
     }
 }

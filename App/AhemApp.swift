@@ -17,8 +17,7 @@ struct AhemApp: App {
         MenuBarExtra {
             MenuBarView(coordinator: coordinator)
         } label: {
-            Image("MenuBarIcon")
-                .accessibilityLabel("Ahem")
+            MenuBarStatusLabel(coordinator: coordinator)
         }
         .menuBarExtraStyle(.menu)
 

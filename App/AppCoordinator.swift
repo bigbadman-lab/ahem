@@ -21,6 +21,8 @@ final class AppCoordinator: ObservableObject {
 
     private var panicDetector: PanicDetector?
     private var didStart = false
+    private var didEvaluateStartupSetup = false
+    private var didPresentStartupSetup = false
     private var isTraining = false
     private var trainingTask: Task<Void, Never>?
     private var activeSampleCollector: TrainingSampleCollector?
@@ -70,6 +72,7 @@ final class AppCoordinator: ObservableObject {
     }
 
     var shouldPresentOnboarding: Bool {
+        // Kept for manual flows; automatic launch uses evaluateStartupSetupPresentation().
         !onboardingStore.hasCompletedOnboarding
     }
 
@@ -79,6 +82,72 @@ final class AppCoordinator: ObservableObject {
 
     func prepareOnboarding() {
         appState.onboardingPhase = .welcome
+    }
+
+    /// Evaluates permission + fingerprint once at launch and queues a setup window if needed.
+    /// Does not request microphone permission.
+    func evaluateStartupSetupPresentation() {
+        guard !didEvaluateStartupSetup else {
+            #if DEBUG
+            print("[Onboarding] Startup evaluation already done — skipping duplicate")
+            #endif
+            return
+        }
+        didEvaluateStartupSetup = true
+
+        let permission = AudioCaptureService.currentPermissionStatus()
+        let hasFingerprint = panicFingerprintStore.load() != nil
+
+        #if DEBUG
+        print(
+            "[Onboarding] Startup evaluation — "
+                + "permission=\(permission), "
+                + "hasFingerprint=\(hasFingerprint), "
+                + "onboardingCompleted=\(onboardingStore.hasCompletedOnboarding)"
+        )
+        #endif
+
+        switch permission {
+        case .granted:
+            if hasFingerprint {
+                #if DEBUG
+                print("[Onboarding] Setup complete — onboarding not needed")
+                #endif
+                if !onboardingStore.hasCompletedOnboarding {
+                    onboardingStore.markCompleted()
+                }
+                return
+            }
+
+            #if DEBUG
+            print("[Onboarding] Permission granted but no fingerprint — presenting training/setup")
+            #endif
+            if onboardingStore.hasCompletedOnboarding {
+                prepareTrainingUI()
+                appState.setupPresentationRequest = .training
+            } else {
+                // First-run / incomplete setup: keep the onboarding shell and go to training welcome.
+                appState.onboardingPhase = .training
+                appState.trainingUIPhase = .welcome
+                appState.setupPresentationRequest = .onboarding
+            }
+
+        case .notDetermined, .denied:
+            #if DEBUG
+            print("[Onboarding] Permission not granted — presenting onboarding")
+            #endif
+            prepareOnboarding()
+            appState.setupPresentationRequest = .onboarding
+        }
+    }
+
+    func markStartupSetupPresented() {
+        didPresentStartupSetup = true
+        appState.setupPresentationRequest = nil
+    }
+
+    var didConsumeStartupSetupPresentation: Bool {
+        didPresentStartupSetup
     }
 
     func handleOnboardingGetStarted() async {
@@ -654,6 +723,8 @@ final class AppCoordinator: ObservableObject {
         #if DEBUG
         print("[Startup] App launch started (accessory / menu bar mode)")
         #endif
+
+        evaluateStartupSetupPresentation()
 
         Task {
             await beginAudioCapture()
