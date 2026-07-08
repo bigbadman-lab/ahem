@@ -82,17 +82,21 @@ struct MenuBarView: View {
         }
 
         if presentation.showsListeningToggle {
+            #if DEBUG
             Button(presentation.listeningToggleTitle) {
                 coordinator.pauseListening()
             }
             .disabled(coordinator.isTrainingSessionActive)
+            #endif
         }
 
         if presentation.showsResumeToggle {
+            #if DEBUG
             Button("Resume Listening") {
                 coordinator.resumeListening()
             }
             .disabled(coordinator.isTrainingSessionActive)
+            #endif
         }
     }
 
@@ -100,10 +104,12 @@ struct MenuBarView: View {
         switch action {
         case .trainPanicCough, .trainAgain:
             presentTraining()
+        #if DEBUG
         case .resumeListening:
             coordinator.resumeListening()
         case .retryListening:
             coordinator.retryListening()
+        #endif
         case .grantMicrophonePermission:
             coordinator.requestMicrophonePermission()
         }

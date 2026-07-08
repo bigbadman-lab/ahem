@@ -28,10 +28,7 @@ final class AppCoordinator: ObservableObject {
     private var activeSampleCapture: SampleCaptureBridge?
     private var detectionResetTask: Task<Void, Never>?
     private var trainingInputLevelSmoothed: Double = 0
-
-    private var isPausing = false
-    private var isListeningStartupInProgress = false
-    private var activeListeningStartupFailureMode: ListeningRecoveryFailureMode = .audioError
+    private var isStartingListening = false
 
     private let trainingRecordingWindowSeconds: TimeInterval = 5.0
     private let trainingCountdownSeconds = 5
@@ -40,26 +37,15 @@ final class AppCoordinator: ObservableObject {
     private let trainingCompleteDisplayDuration: TimeInterval = 2.0
     private let panicDetectedDisplayDuration: TimeInterval = 1.0
     private let listeningBufferWaitTimeout: TimeInterval = 3.0
-    private let listeningStartupRetryBackoff: TimeInterval = 0.3
 
     private var listeningStartupTask: Task<Void, Never>?
-    private var listeningStartupGeneration: UInt64 = 0
     private var trainingModalActive = false
-    private var startingTimeoutTask: Task<Void, Never>?
     private var trainingTimeoutTask: Task<Void, Never>?
-    private let startingTimeoutDuration: TimeInterval = 12
     private let trainingTimeoutDuration: TimeInterval = 120
 
     private enum ListeningStartupReason: String {
         case startup
-        case retry
-        case resume
         case postTraining
-    }
-
-    private enum ListeningRecoveryFailureMode {
-        case paused
-        case audioError
     }
 
     init(appState: AppState) {
@@ -131,36 +117,12 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func handleStatusSideEffects(from: AppStatus, to: AppStatus) {
-        if AppStateMachine.phase(of: from) == .starting {
-            startingTimeoutTask?.cancel()
-            startingTimeoutTask = nil
-        }
-
-        if AppStateMachine.phase(of: to) == .starting {
-            scheduleStartingTimeout()
-        }
-
         if AppStateMachine.phase(of: to) == .listening {
             endTrainingModal()
         }
 
         if AppStateMachine.phase(of: to) == .trainingFailed {
             endTrainingModal()
-        }
-    }
-
-    private func scheduleStartingTimeout() {
-        startingTimeoutTask?.cancel()
-        startingTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(self?.startingTimeoutDuration ?? 12))
-            guard let self, !Task.isCancelled else { return }
-            guard case .starting = self.appState.status else { return }
-
-            AppStateMachine.logTimeout("starting timed out", reason: "listening startup exceeded timeout")
-            self.applyListeningRecoveryFailure(
-                self.listeningStartupError(code: 7, message: "Listening startup timed out."),
-                mode: self.activeListeningStartupFailureMode
-            )
         }
     }
 
@@ -197,7 +159,6 @@ final class AppCoordinator: ObservableObject {
     private func cancelListeningStartup() {
         listeningStartupTask?.cancel()
         listeningStartupTask = nil
-        listeningStartupGeneration &+= 1
     }
 
     var isTrainingSessionActive: Bool {
@@ -329,7 +290,7 @@ final class AppCoordinator: ObservableObject {
         onboardingStore.markCompleted()
         appState.onboardingPhase = .idle
         dismissTrainingUI()
-        scheduleListeningStartup(reason: .postTraining, failureMode: .audioError)
+        scheduleListeningStartup(reason: .postTraining)
 
         #if DEBUG
         print("[Onboarding] Onboarding completed")
@@ -349,7 +310,7 @@ final class AppCoordinator: ObservableObject {
 
         case .completion:
             dismissTrainingUI()
-            scheduleListeningStartup(reason: .postTraining, failureMode: .audioError)
+            scheduleListeningStartup(reason: .postTraining)
 
         case .welcome, .permissionDenied:
             break
@@ -461,7 +422,7 @@ final class AppCoordinator: ObservableObject {
         trainingTask?.cancel()
         dismissTrainingUI()
         if !isTraining {
-            scheduleListeningStartup(reason: .postTraining, failureMode: .audioError)
+            scheduleListeningStartup(reason: .postTraining)
         }
     }
 
@@ -486,26 +447,10 @@ final class AppCoordinator: ObservableObject {
         #endif
     }
 
+    #if DEBUG
     func pauseListening() {
         guard appState.status == .listening || appState.status == .panicDetected else { return }
-
-        guard !isPausing else {
-            #if DEBUG
-            print("[Listening] Pause ignored — pause already in progress")
-            #endif
-            return
-        }
-        guard !isListeningStartupInProgress else {
-            print("[AudioLifecycle] pause ignored — listening startup already in progress")
-            return
-        }
-
-        isPausing = true
-        defer { isPausing = false }
-
-        #if DEBUG
-        print("[Listening] Pause requested")
-        #endif
+        guard !isStartingListening else { return }
 
         detectionResetTask?.cancel()
         detectionResetTask = nil
@@ -515,71 +460,44 @@ final class AppCoordinator: ObservableObject {
         cancelListeningStartup()
         audioCaptureService.stopCapture(reason: "user paused listening")
         _ = transition(to: .paused, reason: "user paused listening")
-
-        #if DEBUG
-        print("[Listening] Detection paused")
-        print("[Listening] Audio capture stopped")
-        #endif
     }
 
     func resumeListening() {
         guard appState.status == .paused else { return }
-        guard !isPausing else {
-            print("[AudioLifecycle] resume ignored — pause already in progress")
-            return
-        }
-        scheduleListeningStartup(reason: .resume, failureMode: .paused)
+        scheduleListeningStartup(reason: .startup)
     }
 
     func retryListening() {
         guard case .audioError = appState.status else { return }
-        guard !isPausing, !isTraining else { return }
-        scheduleListeningStartup(reason: .retry, failureMode: .audioError)
+        guard !isTraining else { return }
+        scheduleListeningStartup(reason: .startup)
     }
+    #endif
 
-    private func scheduleListeningStartup(
-        reason: ListeningStartupReason,
-        failureMode: ListeningRecoveryFailureMode
-    ) {
-        if isListeningStartupInProgress {
-            let label: String
-            switch reason {
-            case .resume: label = "resume"
-            case .retry: label = "retry"
-            case .startup, .postTraining: label = "startup"
-            }
-            print("[AudioLifecycle] duplicate \(label) ignored — startup already running")
+    private func scheduleListeningStartup(reason: ListeningStartupReason) {
+        guard !isStartingListening else {
+            #if DEBUG
+            print("[Startup] startListening ignored — already in progress")
+            #endif
             return
         }
 
         cancelListeningStartup()
-        let generation = listeningStartupGeneration
-        activeListeningStartupFailureMode = failureMode
-
-        print("[AudioLifecycle] scheduleListeningStartup — reason=\(reason.rawValue) generation=\(generation)")
-
-        isListeningStartupInProgress = true
         listeningStartupTask = Task { [weak self] in
-            defer { self?.isListeningStartupInProgress = false }
-            await self?.startListeningReliably(
-                reason: reason,
-                failureMode: failureMode,
-                generation: generation
-            )
+            await self?.startListening(reason: reason)
         }
     }
 
-    /// Event-driven listening startup shared by launch, retry, resume, and post-training.
-    private func startListeningReliably(
-        reason: ListeningStartupReason,
-        failureMode: ListeningRecoveryFailureMode,
-        generation: UInt64
-    ) async {
-        guard !Task.isCancelled, generation == listeningStartupGeneration else { return }
+    /// Single-path listening startup for launch and post-training.
+    private func startListening(reason: ListeningStartupReason) async {
+        isStartingListening = true
+        defer { isStartingListening = false }
+
+        guard !Task.isCancelled else { return }
 
         if isSetupOrTrainingInProgress, reason != .postTraining {
             #if DEBUG
-            print("[AppStartup] Listening deferred — setup/training in progress")
+            print("[Startup] Listening deferred — setup/training in progress")
             #endif
             return
         }
@@ -610,132 +528,52 @@ final class AppCoordinator: ObservableObject {
             )
         }
 
-        for attempt in 1...2 {
-            guard !Task.isCancelled, generation == listeningStartupGeneration else { return }
-
-            #if DEBUG
-            print("[AppStartup] Attempt \(attempt) starting")
-            #endif
-
-            clearDetectionForListeningRestart()
-            audioCaptureService.stopCapture(
-                reason: "listening startup attempt \(attempt) (\(reason.rawValue))"
-            )
-
-            if attempt > 1 {
-                try? await Task.sleep(for: .milliseconds(Int(listeningStartupRetryBackoff * 1000)))
-            }
-
-            do {
-                let captureGeneration = try startCaptureOrThrow()
-
-                #if DEBUG
-                print("[AppStartup] Capture started — generation=\(captureGeneration)")
-                #endif
-
-                guard await audioCaptureService.waitForFirstProcessedBuffer(
-                    timeout: listeningBufferWaitTimeout,
-                    generation: captureGeneration
-                ) else {
-                    throw listeningStartupError(
-                        code: 5,
-                        message: "No live audio buffers received."
-                    )
-                }
-
-                guard !Task.isCancelled, generation == listeningStartupGeneration else { return }
-
-                #if DEBUG
-                print("[AppStartup] First buffer confirmed — generation=\(captureGeneration)")
-                #endif
-
-                guard attachDetection() else {
-                    throw listeningStartupError(
-                        code: 3,
-                        message: "Detection could not be attached after first buffer."
-                    )
-                }
-
-                guard !Task.isCancelled, generation == listeningStartupGeneration else { return }
-
-                #if DEBUG
-                print("[AppStartup] Detector attached")
-                #endif
-
-                _ = transition(
-                    to: .listening,
-                    reason: "listening ready (\(reason.rawValue))",
-                    options: .init(postTrainingExit: reason == .postTraining)
-                )
-
-                if reason == .resume {
-                    print("[AudioLifecycle] resume succeeded")
-                }
-
-                #if DEBUG
-                print("[AppStartup] Listening ready")
-                #endif
-                return
-            } catch {
-                #if DEBUG
-                print("[AppStartup] Attempt \(attempt) failed: \(error.localizedDescription)")
-                #endif
-
-                clearDetectionForListeningRestart()
-                audioCaptureService.stopCapture(
-                    reason: "listening startup attempt \(attempt) failed (\(reason.rawValue))"
-                )
-            }
-        }
-
-        guard !Task.isCancelled, generation == listeningStartupGeneration else { return }
-
-        if reason == .resume {
-            print("[AudioLifecycle] resume failed after retry")
-        }
-
-        applyListeningRecoveryFailure(
-            listeningStartupError(code: 6, message: "Audio capture could not be restored."),
-            mode: failureMode
-        )
-    }
-
-    private func listeningStartupError(code: Int, message: String) -> AudioCaptureError {
-        AudioCaptureError.engineStartFailed(
-            underlying: NSError(
-                domain: "AppCoordinator",
-                code: code,
-                userInfo: [NSLocalizedDescriptionKey: message]
-            )
-        )
-    }
-
-    private func applyListeningRecoveryFailure(_ error: Error, mode: ListeningRecoveryFailureMode) {
         clearDetectionForListeningRestart()
-        audioCaptureService.stopCapture(reason: "listening recovery failure")
-        refreshLastTrainedDate()
-        endTrainingModal()
+        audioCaptureService.stopCapture(reason: "listening startup (\(reason.rawValue))")
 
-        switch mode {
-        case .paused:
-            _ = transition(
-                to: .paused,
-                reason: "resume listening failed: \(error.localizedDescription)",
-                options: .init(force: true)
-            )
-            #if DEBUG
-            print("[Listening] ResumeListening failed — \(error.localizedDescription); status restored to paused")
-            #endif
+        do {
+            let captureGeneration = try startCaptureOrThrow()
 
-        case .audioError:
+            guard await audioCaptureService.waitForFirstProcessedBuffer(
+                timeout: listeningBufferWaitTimeout,
+                generation: captureGeneration
+            ) else {
+                #if DEBUG
+                print("[Startup] No first audio buffer received")
+                #endif
+                clearDetectionForListeningRestart()
+                audioCaptureService.stopCapture(reason: "no first buffer")
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+
+            guard attachDetection() else {
+                #if DEBUG
+                print("[Startup] Detection attach failed")
+                #endif
+                clearDetectionForListeningRestart()
+                audioCaptureService.stopCapture(reason: "detector attach failed")
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+
             _ = transition(
-                to: .audioError(error.localizedDescription),
-                reason: "listening startup failed: \(error.localizedDescription)",
-                options: .init(force: true)
+                to: .listening,
+                reason: "listening ready (\(reason.rawValue))",
+                options: .init(postTrainingExit: reason == .postTraining)
             )
+
             #if DEBUG
-            print("[AppStartup] Audio Error shown after retry failure")
+            print("[Startup] Listening ready")
             #endif
+        } catch {
+            #if DEBUG
+            print("[Startup] Listening startup failed: \(error.localizedDescription)")
+            #endif
+            clearDetectionForListeningRestart()
+            audioCaptureService.stopCapture(reason: "listening startup failed")
         }
     }
 
@@ -1199,7 +1037,7 @@ final class AppCoordinator: ObservableObject {
                 return
             }
 
-            scheduleListeningStartup(reason: .startup, failureMode: .audioError)
+            scheduleListeningStartup(reason: .startup)
 
         case .denied:
             transition(to: .microphonePermissionDenied, reason: "startup — microphone permission denied")
@@ -1382,7 +1220,7 @@ final class AppCoordinator: ObservableObject {
         print("[Training] Training complete — starting reliable listening")
         #endif
 
-        scheduleListeningStartup(reason: .postTraining, failureMode: .audioError)
+        scheduleListeningStartup(reason: .postTraining)
     }
 
     private func failTraining(_ message: String) {

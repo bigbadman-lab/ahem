@@ -43,8 +43,10 @@ enum AppStatus: Equatable {
 enum MenuBarPrimaryAction: Equatable {
     case trainPanicCough
     case trainAgain
+    #if DEBUG
     case resumeListening
     case retryListening
+    #endif
     case grantMicrophonePermission
 }
 
@@ -96,13 +98,14 @@ extension AppStatus {
                 primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
                 secondaryAction: nil,
                 secondaryActionTitle: "",
-                showsListeningToggle: true,
-                listeningToggleTitle: "Pause Listening",
+                showsListeningToggle: false,
+                listeningToggleTitle: "",
                 showsResumeToggle: false,
                 showsLastTrained: hasFingerprint
             )
 
         case .paused:
+            #if DEBUG
             return MenuBarPresentation(
                 statusLine: "⏸ Paused",
                 primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
@@ -114,6 +117,19 @@ extension AppStatus {
                 showsResumeToggle: true,
                 showsLastTrained: hasFingerprint
             )
+            #else
+            return MenuBarPresentation(
+                statusLine: "🟡 Starting",
+                primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
+                primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
+                secondaryAction: nil,
+                secondaryActionTitle: "",
+                showsListeningToggle: false,
+                listeningToggleTitle: "",
+                showsResumeToggle: false,
+                showsLastTrained: hasFingerprint
+            )
+            #endif
 
         case .needsTraining:
             return MenuBarPresentation(
@@ -155,6 +171,7 @@ extension AppStatus {
             )
 
         case .audioError:
+            #if DEBUG
             return MenuBarPresentation(
                 statusLine: "⚠︎ Audio Error",
                 primaryAction: hasFingerprint ? .retryListening : .trainPanicCough,
@@ -166,6 +183,19 @@ extension AppStatus {
                 showsResumeToggle: false,
                 showsLastTrained: hasFingerprint
             )
+            #else
+            return MenuBarPresentation(
+                statusLine: "⚠︎ Audio Error",
+                primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
+                primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
+                secondaryAction: nil,
+                secondaryActionTitle: "",
+                showsListeningToggle: false,
+                listeningToggleTitle: "",
+                showsResumeToggle: false,
+                showsLastTrained: hasFingerprint
+            )
+            #endif
 
         case .training, .trainingComplete:
             return MenuBarPresentation(
@@ -187,8 +217,8 @@ extension AppStatus {
                 primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
                 secondaryAction: nil,
                 secondaryActionTitle: "",
-                showsListeningToggle: hasFingerprint,
-                listeningToggleTitle: "Pause Listening",
+                showsListeningToggle: false,
+                listeningToggleTitle: "",
                 showsResumeToggle: false,
                 showsLastTrained: hasFingerprint
             )
