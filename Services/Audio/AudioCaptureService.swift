@@ -55,15 +55,23 @@ final class AudioCaptureService {
 
     // Swift 6-safe scoped lock protecting capture-active state and first-buffer wait.
     private let captureStateLock = OSAllocatedUnfairLock()
+    private var captureGeneration: UInt64 = 0
+    private var liveCaptureGeneration: UInt64 = 0
     private var bufferSerial: UInt64 = 0
     private var bufferSerialAtLastStart: UInt64 = 0
     private var firstProcessedBufferWaitContinuation: CheckedContinuation<Bool, Never>?
+    private var firstProcessedBufferWaitGeneration: UInt64 = 0
     private var firstProcessedBufferWaitTimeoutTask: Task<Void, Never>?
 
     /// Single source of truth for live capture.
     /// True only when session committed, tap installed, engine exists, and engine.isRunning.
     var isCapturing: Bool {
         captureStateLock.withLock { isCapturingUnlocked() }
+    }
+
+    /// Monotonically increasing token assigned on each `startCapture()`.
+    var currentCaptureGeneration: UInt64 {
+        captureStateLock.withLock { captureGeneration }
     }
 
     /// Sample rate used by training/detection after normalization (always 16000 when capturing).
@@ -338,28 +346,25 @@ final class AudioCaptureService {
     }
     #endif
 
-    func startCapture() throws {
-        if isCapturing {
-            #if DEBUG
-            print("[AudioCapture] Audio engine already running — start ignored")
-            #endif
-            return
+    /// Idempotent: always tears down any prior session, then builds a fresh engine and tap.
+    /// - Returns: The capture generation token for this session.
+    @discardableResult
+    func startCapture() throws -> UInt64 {
+        stopCapture(reason: "pre-start clean slate")
+
+        let generation = captureStateLock.withLock {
+            captureGeneration &+= 1
+            return captureGeneration
         }
 
-        // Tear down any half-started session before recreating the engine.
-        captureStateLock.withLock {
-            captureSessionActive = false
-            bufferSerialAtLastStart = bufferSerial
-        }
-        if isTapInstalled || engine != nil {
-            cleanupFailedCaptureStart(reason: "resetting before fresh start")
-        }
+        print("[AudioLifecycle] startCapture requested — generation=\(generation)")
 
         #if DEBUG
         print("[AudioCapture] Creating AVAudioEngine (permission granted path)")
         #endif
         let newEngine = AVAudioEngine()
         engine = newEngine
+        print("[AudioLifecycle] engine created — generation=\(generation)")
 
         #if DEBUG
         print("[AudioCapture] Starting audio engine")
@@ -374,7 +379,8 @@ final class AudioCaptureService {
               hardwareFormat.sampleRate > 0,
               hardwareFormat.channelCount > 0 else {
             cleanupFailedCaptureStart(
-                reason: "invalid input format sampleRate=\(hardwareFormat.sampleRate) channels=\(hardwareFormat.channelCount)"
+                reason: "invalid input format sampleRate=\(hardwareFormat.sampleRate) channels=\(hardwareFormat.channelCount)",
+                generation: generation
             )
             throw AudioCaptureError.invalidInputFormat
         }
@@ -385,7 +391,10 @@ final class AudioCaptureService {
             channels: 1,
             interleaved: false
         ) else {
-            cleanupFailedCaptureStart(reason: "could not create 16 kHz mono processing format")
+            cleanupFailedCaptureStart(
+                reason: "could not create 16 kHz mono processing format",
+                generation: generation
+            )
             throw AudioCaptureError.converterSetupFailed
         }
 
@@ -397,7 +406,8 @@ final class AudioCaptureService {
         } else {
             guard let madeConverter = AVAudioConverter(from: hardwareFormat, to: processingFormat) else {
                 cleanupFailedCaptureStart(
-                    reason: "AVAudioConverter setup failed \(hardwareFormat.sampleRate)Hz → \(Self.targetProcessingSampleRate)Hz"
+                    reason: "AVAudioConverter setup failed \(hardwareFormat.sampleRate)Hz → \(Self.targetProcessingSampleRate)Hz",
+                    generation: generation
                 )
                 throw AudioCaptureError.converterSetupFailed
             }
@@ -420,35 +430,45 @@ final class AudioCaptureService {
         print("[AudioCapture] Installing input tap (onBus=0, bufferSize=1024)")
         #endif
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardwareFormat) { [weak self] buffer, _ in
-            self?.handleBuffer(buffer)
+            self?.handleBuffer(buffer, bufferGeneration: generation)
         }
         captureStateLock.withLock {
             isTapInstalled = true
         }
+        print("[AudioLifecycle] tap installed — generation=\(generation)")
 
         do {
             newEngine.prepare()
             try newEngine.start()
         } catch {
             cleanupFailedCaptureStart(
-                reason: "engine.start() threw: \(error.localizedDescription)"
+                reason: "engine.start() threw: \(error.localizedDescription)",
+                generation: generation
             )
             throw AudioCaptureError.engineStartFailed(underlying: error)
         }
+
+        print("[AudioLifecycle] engine started — generation=\(generation)")
 
         // Commit capture as active only if the engine is still running under the same lock
         // used by external `isCapturing` reads — never return success with a false external state.
         let committed = captureStateLock.withLock { () -> Bool in
             guard isTapInstalled, let engine, engine === newEngine, engine.isRunning else {
                 captureSessionActive = false
+                liveCaptureGeneration = 0
                 return false
             }
             captureSessionActive = true
+            liveCaptureGeneration = generation
+            bufferSerialAtLastStart = bufferSerial
             return isCapturingUnlocked()
         }
 
         guard committed else {
-            cleanupFailedCaptureStart(reason: "engine.isRunning=false after start")
+            cleanupFailedCaptureStart(
+                reason: "engine.isRunning=false after start",
+                generation: generation
+            )
             throw AudioCaptureError.engineStartFailed(
                 underlying: NSError(
                     domain: "AudioCaptureService",
@@ -467,6 +487,8 @@ final class AudioCaptureService {
                 + "processingRate=\(String(format: "%.0f", Self.targetProcessingSampleRate))"
         )
         #endif
+
+        return generation
     }
 
     /// Snapshot of capture activity using the same lock as `isCapturing`.
@@ -480,16 +502,14 @@ final class AudioCaptureService {
         }
     }
 
-    private func cleanupFailedCaptureStart(reason: String) {
-        #if DEBUG
-        if reason != "resetting before fresh start" {
-            print("[AudioCapture] Audio engine start failed — \(reason)")
-            print("[AudioCapture] Cleaning up failed capture start")
-        }
-        #endif
+    /// Idempotent: safe to call repeatedly; always invalidates live generation and tears down engine state.
+    func stopCapture(reason: String = "unspecified") {
+        print("[AudioLifecycle] stopCapture requested — reason=\(reason)")
 
         let continuationToResume = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
             captureSessionActive = false
+            liveCaptureGeneration = 0
+            firstProcessedBufferWaitGeneration = 0
             let pending = firstProcessedBufferWaitContinuation
             firstProcessedBufferWaitContinuation = nil
             return pending
@@ -497,61 +517,28 @@ final class AudioCaptureService {
         firstProcessedBufferWaitTimeoutTask?.cancel()
         firstProcessedBufferWaitTimeoutTask = nil
         continuationToResume?.resume(returning: false)
-        #if DEBUG
-        if continuationToResume != nil {
-            print("[AudioCapture] First buffer wait cancelled")
-        }
-        #endif
 
-        removeTapIfNeeded()
-        if let engine {
-            if engine.isRunning {
-                engine.stop()
-            }
-        }
-        engine = nil
-        sampleRateConverter = nil
-        processingFormat = nil
-        hardwareSampleRateValue = 0
-        bufferCount = 0
-        lastLogDate = nil
-    }
-
-    func stopCapture() {
-        // If someone is waiting for a first buffer, stop that wait immediately.
-        let continuationToResume = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
-            captureSessionActive = false
-            let pending = firstProcessedBufferWaitContinuation
-            firstProcessedBufferWaitContinuation = nil
-            return pending
-        }
-        firstProcessedBufferWaitTimeoutTask?.cancel()
-        firstProcessedBufferWaitTimeoutTask = nil
-        continuationToResume?.resume(returning: false)
-        #if DEBUG
-        if continuationToResume != nil {
-            print("[AudioCapture] First buffer wait cancelled")
-        }
-        #endif
-
-        let shouldStop = captureStateLock.withLock {
+        let hadEngine = captureStateLock.withLock {
             isTapInstalled || engine != nil
         }
-        guard shouldStop else {
-            #if DEBUG
-            print("[AudioCapture] Audio engine already stopped — stop ignored")
-            #endif
+
+        guard hadEngine else {
+            resetEngineResources(logEvents: false)
             return
         }
-
-        #if DEBUG
-        print("[AudioCapture] Stopping audio engine")
-        #endif
 
         removeTapIfNeeded()
         if let engine, engine.isRunning {
             engine.stop()
+            print("[AudioLifecycle] engine stopped")
+        } else {
+            print("[AudioLifecycle] engine stopped")
         }
+
+        resetEngineResources(logEvents: true)
+    }
+
+    private func resetEngineResources(logEvents: Bool) {
         engine = nil
         sampleRateConverter = nil
         processingFormat = nil
@@ -559,9 +546,26 @@ final class AudioCaptureService {
         bufferCount = 0
         lastLogDate = nil
 
+        if logEvents {
+            print("[AudioLifecycle] engine reset")
+        }
+    }
+
+    private func cleanupFailedCaptureStart(reason: String, generation: UInt64) {
         #if DEBUG
-        print("[AudioCapture] Audio engine stopped — captureActive=\(isCapturing)")
+        print("[AudioCapture] Audio engine start failed — \(reason)")
+        print("[AudioCapture] Cleaning up failed capture start")
         #endif
+
+        captureStateLock.withLock {
+            if liveCaptureGeneration == generation {
+                liveCaptureGeneration = 0
+            }
+            captureSessionActive = false
+            firstProcessedBufferWaitGeneration = 0
+        }
+
+        stopCapture(reason: "failed start cleanup (generation=\(generation))")
     }
 
     private func removeTapIfNeeded() {
@@ -577,9 +581,20 @@ final class AudioCaptureService {
         print("[AudioCapture] Removing input tap (onBus=0)")
         #endif
         engineForTap.inputNode.removeTap(onBus: 0)
+        print("[AudioLifecycle] input tap removed")
     }
 
-    private func handleBuffer(_ buffer: AVAudioPCMBuffer) {
+    private func handleBuffer(_ buffer: AVAudioPCMBuffer, bufferGeneration: UInt64) {
+        let currentGeneration = captureStateLock.withLock { liveCaptureGeneration }
+        guard currentGeneration > 0, currentGeneration == bufferGeneration else {
+            let latest = captureStateLock.withLock { captureGeneration }
+            print(
+                "[AudioLifecycle] ignoring stale buffer — "
+                    + "bufferGeneration=\(bufferGeneration) currentGeneration=\(latest)"
+            )
+            return
+        }
+
         guard buffer.frameLength > 0,
               buffer.floatChannelData != nil else {
             return
@@ -588,11 +603,21 @@ final class AudioCaptureService {
         let sourceFrameLength = buffer.frameLength
         guard let processed = normalizedBuffer(from: buffer) else { return }
 
-        let continuationToResume = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
+        let waitResolution = captureStateLock.withLock { () -> (CheckedContinuation<Bool, Never>?, Bool) in
+            guard liveCaptureGeneration == bufferGeneration else {
+                return (nil, false)
+            }
+
             bufferSerial &+= 1
-            let pending = firstProcessedBufferWaitContinuation
+            let hasNewBuffer = bufferSerial > bufferSerialAtLastStart
+            guard let pending = firstProcessedBufferWaitContinuation,
+                  firstProcessedBufferWaitGeneration == bufferGeneration else {
+                return (nil, hasNewBuffer)
+            }
+
             firstProcessedBufferWaitContinuation = nil
-            return pending
+            firstProcessedBufferWaitGeneration = 0
+            return (pending, true)
         }
 
         bufferCount += 1
@@ -602,12 +627,10 @@ final class AudioCaptureService {
         )
         onBuffer?(processed)
 
-        if let continuationToResume {
+        if let continuationToResume = waitResolution.0 {
             firstProcessedBufferWaitTimeoutTask?.cancel()
             firstProcessedBufferWaitTimeoutTask = nil
-            #if DEBUG
-            print("[AudioCapture] First processed buffer received")
-            #endif
+            print("[AudioLifecycle] first buffer received — generation=\(bufferGeneration)")
             continuationToResume.resume(returning: true)
         }
     }
@@ -661,41 +684,41 @@ final class AudioCaptureService {
         }
     }
 
-    /// Waits for the first normalized mono 16 kHz buffer after the most recent `startCapture()`.
+    /// Waits for the first normalized mono 16 kHz buffer for the given capture generation.
     /// - Returns: `true` when a valid processed buffer arrived before timeout, otherwise `false`.
-    func waitForFirstProcessedBuffer(timeout: TimeInterval) async -> Bool {
+    func waitForFirstProcessedBuffer(timeout: TimeInterval, generation: UInt64) async -> Bool {
         let timeoutSeconds = max(0, timeout)
-        if timeoutSeconds == 0 {
+        if timeoutSeconds == 0 || generation == 0 {
             return false
         }
 
         let alreadyHasBuffer = captureStateLock.withLock {
-            bufferSerial > bufferSerialAtLastStart
+            liveCaptureGeneration == generation && bufferSerial > bufferSerialAtLastStart
         }
         if alreadyHasBuffer {
-            #if DEBUG
-            print("[AudioCapture] First processed buffer received")
-            #endif
+            print("[AudioLifecycle] first buffer received — generation=\(generation)")
             return true
         }
 
-        #if DEBUG
-        print("[AudioCapture] Waiting for first processed buffer")
-        #endif
+        guard captureStateLock.withLock({ liveCaptureGeneration == generation }) else {
+            return false
+        }
+
+        print("[AudioLifecycle] waiting for first buffer — generation=\(generation)")
 
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             let shouldResumeNow = captureStateLock.withLock { () -> Bool in
+                guard liveCaptureGeneration == generation else { return false }
                 if bufferSerial > bufferSerialAtLastStart {
                     return true
                 }
                 firstProcessedBufferWaitContinuation = continuation
+                firstProcessedBufferWaitGeneration = generation
                 return false
             }
 
             if shouldResumeNow {
-                #if DEBUG
-                print("[AudioCapture] First processed buffer received")
-                #endif
+                print("[AudioLifecycle] first buffer received — generation=\(generation)")
                 continuation.resume(returning: true)
                 return
             }
@@ -705,13 +728,19 @@ final class AudioCaptureService {
                 let nanos = UInt64(timeoutSeconds * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: nanos)
 
-                let timeoutContinuation = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
+                let timeoutResolution = captureStateLock.withLock { () -> (CheckedContinuation<Bool, Never>?, UInt64) in
                     let pending = firstProcessedBufferWaitContinuation
+                    let waitGeneration = firstProcessedBufferWaitGeneration
                     firstProcessedBufferWaitContinuation = nil
-                    return pending
+                    firstProcessedBufferWaitGeneration = 0
+                    return (pending, waitGeneration)
                 }
 
-                guard let timeoutContinuation else { return }
+                guard let timeoutContinuation = timeoutResolution.0 else { return }
+                guard timeoutResolution.1 == generation else {
+                    timeoutContinuation.resume(returning: false)
+                    return
+                }
 
                 #if DEBUG
                 print("[AudioCapture] First buffer wait timed out")
@@ -723,7 +752,8 @@ final class AudioCaptureService {
 
     /// Backward-compatible alias used by older call sites.
     func waitForFirstBufferAfterStart(timeout: TimeInterval) async -> Bool {
-        await waitForFirstProcessedBuffer(timeout: timeout)
+        let generation = captureStateLock.withLock { liveCaptureGeneration }
+        return await waitForFirstProcessedBuffer(timeout: timeout, generation: generation)
     }
 
     private func logBufferActivity(
