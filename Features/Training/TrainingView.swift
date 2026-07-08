@@ -57,16 +57,10 @@ struct TrainingView: View {
             TrainingBetweenSamplesView(completedSample: completedSample, total: total)
 
         case .succeeded:
-            TrainingSucceededView(
-                listeningIsActive: false,
-                onDone: dismiss
-            )
+            TrainingSucceededView(onDone: confirmCompletion)
 
         case .succeededListeningActive:
-            TrainingSucceededView(
-                listeningIsActive: true,
-                onDone: dismiss
-            )
+            TrainingSucceededView(onDone: confirmCompletion)
 
         case .failed(let message):
             TrainingFailedView(message: message, onTryAgain: startTraining)
@@ -75,6 +69,11 @@ struct TrainingView: View {
 
     private func startTraining() {
         coordinator.startTraining()
+    }
+
+    private func confirmCompletion() {
+        coordinator.confirmTrainingCompleteAndStartListening()
+        dismissWindow(id: TrainingWindowID.value)
     }
 
     private func dismiss() {
@@ -244,7 +243,6 @@ private struct TrainingBetweenSamplesView: View {
 }
 
 private struct TrainingSucceededView: View {
-    let listeningIsActive: Bool
     let onDone: () -> Void
 
     var body: some View {
@@ -258,17 +256,14 @@ private struct TrainingSucceededView: View {
             AhemAppIconView()
                 .padding(.vertical, 8)
 
-            Text(listeningIsActive
-                ? "Listening is now active."
-                : "Your Mac now knows your cough.")
+            Text("Your Mac now knows your cough.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .animation(.easeInOut(duration: 0.3), value: listeningIsActive)
 
             Spacer()
 
-            Button("Done", action: onDone)
+            Button("Start Listening", action: onDone)
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
         }

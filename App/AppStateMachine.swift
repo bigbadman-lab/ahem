@@ -7,6 +7,8 @@ enum AppStateMachine {
         var force: Bool = false
         /// Allows leaving an active training session to start listening (post-training).
         var postTrainingExit: Bool = false
+        /// User explicitly confirmed training completion (final button).
+        var userConfirmedTrainingCompletion: Bool = false
     }
 
     enum Phase: Equatable {
@@ -101,7 +103,7 @@ enum AppStateMachine {
 
         case (.trainingComplete, .listening),
              (.trainingComplete, .starting):
-            return options.postTrainingExit
+            return options.postTrainingExit || options.userConfirmedTrainingCompletion
 
         case (.trainingFailed, .training):
             return options.userInitiated

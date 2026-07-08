@@ -141,7 +141,7 @@ private struct OnboardingCompletionView: View {
                 .fontWeight(.semibold)
                 .multilineTextAlignment(.center)
 
-            Text("Your Mac now knows your cough.\n\nAhem is now listening quietly from your menu bar.")
+            Text("Your Mac now knows your cough.\n\nTap Start Listening to begin.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -149,7 +149,7 @@ private struct OnboardingCompletionView: View {
 
             Spacer()
 
-            Button("Done", action: onDone)
+            Button("Start Listening", action: onDone)
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
         }

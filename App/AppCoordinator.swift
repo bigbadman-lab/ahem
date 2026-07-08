@@ -30,6 +30,7 @@ final class AppCoordinator: ObservableObject {
     private var trainingInputLevelSmoothed: Double = 0
     private var isStartingListening = false
     private var explicitTrainingStartInProgress = false
+    private var trainingAwaitingUserConfirmation = false
 
     private let trainingRecordingWindowSeconds: TimeInterval = 5.0
     private let trainingCountdownSeconds = 5
@@ -85,6 +86,22 @@ final class AppCoordinator: ObservableObject {
     ) -> Bool {
         let current = appState.status
 
+        if trainingAwaitingUserConfirmation || AppStateMachine.phase(of: current) == .trainingComplete {
+            let toPhase = AppStateMachine.phase(of: newStatus)
+            if (toPhase == .starting || toPhase == .listening), !options.userConfirmedTrainingCompletion {
+                AppStateMachine.logBlocked(
+                    from: current,
+                    to: newStatus,
+                    reason: "training completion not confirmed — \(reason)"
+                )
+                if toPhase == .starting {
+                    print("[Training] blocked transition to Starting before confirmation")
+                }
+                print("[Training] blocked listening start — waiting for user confirmation")
+                return false
+            }
+        }
+
         if AppStateMachine.phase(of: newStatus) == .training, !options.userInitiated {
             AppStateMachine.logBlocked(
                 from: current,
@@ -128,6 +145,7 @@ final class AppCoordinator: ObservableObject {
         if fromPhase == .training, toPhase == .training { return true }
         if toPhase == .trainingFailed { return true }
         if toPhase == .trainingComplete { return true }
+        if options.userConfirmedTrainingCompletion, toPhase == .starting || toPhase == .listening { return true }
         if options.postTrainingExit, toPhase == .starting || toPhase == .listening { return true }
         return false
     }
@@ -137,7 +155,8 @@ final class AppCoordinator: ObservableObject {
             cancelTrainingWatchdog()
         }
 
-        if AppStateMachine.phase(of: to) == .training {
+        if AppStateMachine.phase(of: to) == .training
+            || (AppStateMachine.phase(of: to) == .trainingComplete && trainingAwaitingUserConfirmation) {
             scheduleTrainingWatchdog()
         }
 
@@ -165,7 +184,8 @@ final class AppCoordinator: ObservableObject {
         trainingWatchdogTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(self?.trainingWatchdogDuration ?? 90))
             guard let self, !Task.isCancelled else { return }
-            guard AppStateMachine.phase(of: self.appState.status) == .training else { return }
+            guard AppStateMachine.phase(of: self.appState.status) == .training
+                || (self.appState.status == .trainingComplete && self.trainingAwaitingUserConfirmation) else { return }
 
             print("[StateMachine] training watchdog fired")
             self.failTraining("Training timed out. Please try again.")
@@ -364,11 +384,7 @@ final class AppCoordinator: ObservableObject {
     func finishOnboarding() {
         onboardingStore.markCompleted()
         appState.onboardingPhase = .idle
-        dismissTrainingUI()
-
-        if appState.status != .listening {
-            schedulePostTrainingListening()
-        }
+        confirmTrainingCompleteAndStartListening()
 
         #if DEBUG
         print("[Onboarding] Onboarding completed")
@@ -388,7 +404,6 @@ final class AppCoordinator: ObservableObject {
 
         case .completion:
             dismissTrainingUI()
-            schedulePostTrainingListening()
 
         case .welcome, .permissionDenied:
             break
@@ -471,6 +486,15 @@ final class AppCoordinator: ObservableObject {
     }
 
     func handleTrainingWindowClosed() {
+        if trainingAwaitingUserConfirmation {
+            #if DEBUG
+            print("[Training] Window closed before user confirmation — listening not started")
+            #endif
+            dismissTrainingUI()
+            endTrainingModal()
+            return
+        }
+
         if appState.status == .trainingComplete || trainingHasSucceeded {
             #if DEBUG
             print("[Training] Window closed after success")
@@ -494,21 +518,21 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func finishSuccessfulTrainingOnWindowClose() {
+        guard !trainingAwaitingUserConfirmation else { return }
+
         trainingTask?.cancel()
         isTraining = false
         dismissTrainingUI()
         endTrainingModal()
 
-        if panicFingerprintStore.load() != nil {
-            if appState.status != .listening {
-                _ = transition(
-                    to: .starting,
-                    reason: "training window closed after success",
-                    options: .init(force: true, postTrainingExit: true)
-                )
-                schedulePostTrainingListening()
-            }
-        } else {
+        if panicFingerprintStore.load() != nil, appState.status != .listening {
+            _ = transition(
+                to: .starting,
+                reason: "training window closed after success",
+                options: .init(force: true, postTrainingExit: true, userConfirmedTrainingCompletion: true)
+            )
+            schedulePostTrainingListening()
+        } else if panicFingerprintStore.load() == nil {
             _ = transition(to: .needsTraining, reason: "training window closed after success", options: .init(force: true))
         }
     }
@@ -516,6 +540,7 @@ final class AppCoordinator: ObservableObject {
     private func cancelTrainingSession() {
         trainingTask?.cancel()
         explicitTrainingStartInProgress = false
+        trainingAwaitingUserConfirmation = false
         activeSampleCapture?.resume(with: [])
 
         if activeSampleCollector != nil {
@@ -585,8 +610,13 @@ final class AppCoordinator: ObservableObject {
 
     /// Post-training: fully tear down training audio, pause briefly, then cold-start listening.
     private func schedulePostTrainingListening() {
+        guard !trainingAwaitingUserConfirmation else {
+            print("[Training] blocked listening start — waiting for user confirmation")
+            return
+        }
+
         guard !isStartingListening else {
-            print("[Startup] post-training listening ignored — startup already in progress")
+            print("[Startup] post-confirmation listening ignored — startup already in progress")
             return
         }
 
@@ -602,13 +632,13 @@ final class AppCoordinator: ObservableObject {
 
         guard !Task.isCancelled else { return }
 
-        print("[Training] stopping training audio session")
+        print("[Training] stopping training audio before listening")
         activeSampleCollector = nil
         activeSampleCapture = nil
         audioPipeline.setSampleCollector(nil)
         clearDetectionForListeningRestart()
-        audioCaptureService.stopCapture(reason: "post-training teardown")
-        print("[Training] training audio fully stopped")
+        audioCaptureService.stopCapture(reason: "post-confirmation teardown")
+        print("[Training] training audio stopped")
 
         let cleanupNanos = UInt64(postTrainingAudioCleanupDelay * 1_000_000_000)
         try? await Task.sleep(nanoseconds: cleanupNanos)
@@ -617,6 +647,38 @@ final class AppCoordinator: ObservableObject {
 
         print("[Training] starting fresh listening session")
         await startListeningFromSavedFingerprint(reason: .postTraining)
+    }
+
+    /// Called when the user taps the final training completion button.
+    func confirmTrainingCompleteAndStartListening() {
+        guard trainingAwaitingUserConfirmation || appState.status == .trainingComplete else {
+            if appState.status == .listening { return }
+            return
+        }
+
+        print("[Training] user confirmed completion")
+        trainingAwaitingUserConfirmation = false
+        explicitTrainingStartInProgress = false
+        dismissTrainingUI()
+        endTrainingModal()
+
+        guard panicFingerprintStore.load() != nil else {
+            transition(to: .needsTraining, reason: "training confirmed — fingerprint missing")
+            return
+        }
+
+        _ = transition(
+            to: .starting,
+            reason: "user confirmed training completion",
+            options: .init(
+                force: true,
+                postTrainingExit: true,
+                userConfirmedTrainingCompletion: true
+            )
+        )
+
+        print("[Startup] post-confirmation cold-start path requested")
+        schedulePostTrainingListening()
     }
 
     /// Entry for cold launch / reopen. Post-training uses `runPostTrainingListeningStartup()` first.
@@ -664,7 +726,7 @@ final class AppCoordinator: ObservableObject {
         }
 
         if reason == .postTraining {
-            print("[Startup] post-training using saved fingerprint")
+            print("[Startup] post-confirmation fingerprint loaded")
         } else if panicFingerprintStore.hasStoredData {
             print("[Startup] starting from saved fingerprint")
         }
@@ -696,7 +758,7 @@ final class AppCoordinator: ObservableObject {
             guard !Task.isCancelled else { return }
 
             if reason == .postTraining {
-                print("[Startup] post-training first buffer confirmed")
+                print("[Startup] post-confirmation first buffer confirmed")
             }
 
             guard attachDetection() else {
@@ -721,7 +783,7 @@ final class AppCoordinator: ObservableObject {
             )
 
             if reason == .postTraining {
-                print("[Startup] ready after training")
+                print("[Startup] post-confirmation ready")
             } else {
                 print("[Startup] ready")
             }
@@ -778,9 +840,14 @@ final class AppCoordinator: ObservableObject {
         )
         #endif
 
-        guard !isTraining else {
+        guard !isTraining, !trainingAwaitingUserConfirmation, !trainingModalActive else {
+            if trainingAwaitingUserConfirmation || trainingModalActive {
+                print("[Training] blocked listening start — waiting for user confirmation")
+            }
             #if DEBUG
-            print("[Detection] attachDetection skipped — training still active")
+            if isTraining {
+                print("[Detection] attachDetection skipped — training still active")
+            }
             #endif
             return false
         }
@@ -976,6 +1043,7 @@ final class AppCoordinator: ObservableObject {
         isTraining = false
         trainingModalActive = false
         explicitTrainingStartInProgress = false
+        trainingAwaitingUserConfirmation = false
 
         switch permission {
         case .granted:
@@ -995,6 +1063,7 @@ final class AppCoordinator: ObservableObject {
             return
         }
 
+        trainingAwaitingUserConfirmation = false
         explicitTrainingStartInProgress = true
         Task { [weak self] in
             await self?.startTrainingAfterPermissionCheck()
@@ -1364,7 +1433,9 @@ final class AppCoordinator: ObservableObject {
             print("[Training] sample 3 complete")
             print("[Training] fingerprint saved")
 
-            finishTrainingAndStartListening(onboardingCompletion: isOnboardingSessionActive)
+            completeSampleCollectionAwaitingConfirmation(
+                onboardingCompletion: isOnboardingSessionActive
+            )
         } catch {
             #if DEBUG
             print("[Training] Training failed — \(error.localizedDescription)")
@@ -1373,16 +1444,16 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    private func finishTrainingAndStartListening(onboardingCompletion: Bool) {
-        print("[Training] exiting training state")
+    private func completeSampleCollectionAwaitingConfirmation(onboardingCompletion: Bool) {
+        print("[Training] sample collection complete — waiting for user confirmation")
 
-        isTraining = false
-        explicitTrainingStartInProgress = false
         activeSampleCollector = nil
         activeSampleCapture = nil
         audioPipeline.setSampleCollector(nil)
-        endTrainingModal()
-        dismissTrainingUI()
+        audioCaptureService.stopCapture(reason: "training collection complete — awaiting confirmation")
+
+        trainingAwaitingUserConfirmation = true
+        isTraining = false
 
         if onboardingCompletion {
             appState.onboardingPhase = .completion
@@ -1392,17 +1463,14 @@ final class AppCoordinator: ObservableObject {
         }
 
         _ = transition(
-            to: .starting,
-            reason: "training complete — starting listening",
-            options: .init(force: true, postTrainingExit: true)
+            to: .trainingComplete,
+            reason: "all samples collected — awaiting user confirmation"
         )
-
-        print("[Training] post-training start listening requested")
-        schedulePostTrainingListening()
     }
 
     private func failTraining(_ message: String) {
         isTraining = false
+        trainingAwaitingUserConfirmation = false
         explicitTrainingStartInProgress = false
         endTrainingModal()
         _ = transition(to: .trainingFailed(message), reason: message, options: .init(force: true))
