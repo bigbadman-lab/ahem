@@ -277,21 +277,10 @@ final class AppCoordinator: ObservableObject {
         guard !didStart else { return }
         didStart = true
 
-        #if DEBUG
-        print("[Startup] App launch started")
-        let lsUIElement = Bundle.main.object(forInfoDictionaryKey: "LSUIElement")
-        print(
-            "[Startup] DEBUG temporary foreground mode — "
-                + "LSUIElement=\(String(describing: lsUIElement)) "
-                + "(expected false / 0 for this experiment)"
-        )
-        // Temporary Debug-only: stay a normal foreground app so we can test
-        // whether LSUIElement/accessory mode prevents the mic permission dialog.
-        NSApplication.shared.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        print("[Startup] Activation policy=\(NSApp.activationPolicy().rawValue) (0=regular)")
-        #else
         NSApplication.shared.setActivationPolicy(.accessory)
+
+        #if DEBUG
+        print("[Startup] App launch started (accessory / menu bar mode)")
         #endif
 
         Task {

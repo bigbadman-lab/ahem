@@ -425,7 +425,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
-				INFOPLIST_KEY_LSUIElement = NO;
+				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Ahem. All rights reserved.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Ahem uses your microphone to learn your cough. Audio never leaves your Mac.";
 				LD_RUNPATH_SEARCH_PATHS = (
