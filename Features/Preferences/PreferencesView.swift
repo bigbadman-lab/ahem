@@ -23,7 +23,7 @@ struct PreferencesView: View {
                         updateLaunchAtLogin(isEnabled)
                     }
 
-                Button("Retrain Panic Cough…") {
+                Button("Retrain your cough…") {
                     presentTraining()
                 }
                 .disabled(coordinator.isTrainingSessionActive)

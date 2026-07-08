@@ -91,12 +91,12 @@ private struct TrainingWelcomeView: View {
             AhemAppIconView()
                 .padding(.bottom, 8)
 
-            Text("Train your panic cough")
+            Text("Train your cough")
                 .font(.title)
                 .fontWeight(.semibold)
                 .multilineTextAlignment(.center)
 
-            Text("Teach your Mac what your personal panic cough sounds like.\nEverything stays on your Mac.")
+            Text("Teach your Mac what your unique cough sounds like.\nEverything stays on your Mac.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -255,7 +255,7 @@ private struct TrainingSucceededView: View {
 
             Text(listeningIsActive
                 ? "Listening is now active."
-                : "Your Mac now knows your panic cough.")
+                : "Your Mac now knows your cough.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

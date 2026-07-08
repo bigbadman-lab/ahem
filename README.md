@@ -2,7 +2,7 @@
 
 A native macOS menu bar app for awkward moments.
 
-Train your Mac to recognise your panic signal. When you make it, your active browser disappears.
+Train your Mac to recognise your unique cough. When you make it, your active browser disappears.
 
 ## Principles
 

@@ -27,7 +27,7 @@ struct AhemApp: App {
         }
         .defaultSize(width: AhemLayout.windowMinWidth + 20, height: AhemLayout.trainingWindowMinHeight + 40)
 
-        Window("Train your panic cough", id: TrainingWindowID.value) {
+        Window("Train your cough", id: TrainingWindowID.value) {
             TrainingView(coordinator: coordinator)
         }
         .defaultSize(width: AhemLayout.windowMinWidth + 20, height: AhemLayout.trainingWindowMinHeight + 40)

@@ -42,20 +42,38 @@ final class AudioCaptureService {
     }
 
     static func currentPermissionStatus() -> MicrophonePermissionStatus {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized:
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
             return .granted
-        case .notDetermined:
-            return .notDetermined
-        case .denied, .restricted:
+        case .denied:
             return .denied
+        case .undetermined:
+            return .notDetermined
         @unknown default:
             return .denied
         }
     }
 
+    /// Requests microphone permission when undetermined.
+    /// Must be called from the main actor while the app is active so macOS can present the system dialog.
+    @MainActor
     static func requestPermission() async -> MicrophonePermissionStatus {
-        let granted = await AVCaptureDevice.requestAccess(for: .audio)
+        let current = currentPermissionStatus()
+        switch current {
+        case .granted:
+            return .granted
+        case .denied:
+            return .denied
+        case .notDetermined:
+            break
+        }
+
+        let granted = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            AVAudioApplication.requestRecordPermission { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+
         return granted ? .granted : .denied
     }
 

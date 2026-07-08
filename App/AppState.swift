@@ -80,7 +80,7 @@ extension AppStatus {
             return MenuBarPresentation(
                 statusLine: "🟢 Listening",
                 primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
-                primaryActionTitle: hasFingerprint ? "Train Again…" : "Train Panic Cough…",
+                primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
                 showsListeningToggle: true,
                 listeningToggleTitle: "Pause Listening",
                 showsLastTrained: hasFingerprint
@@ -100,7 +100,7 @@ extension AppStatus {
             return MenuBarPresentation(
                 statusLine: "⚪ Training Needed",
                 primaryAction: .trainPanicCough,
-                primaryActionTitle: "Train Panic Cough…",
+                primaryActionTitle: "Train your cough…",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
                 showsLastTrained: false
@@ -120,7 +120,7 @@ extension AppStatus {
             return MenuBarPresentation(
                 statusLine: "⚠︎ Audio Error",
                 primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
-                primaryActionTitle: hasFingerprint ? "Train Again…" : "Train Panic Cough…",
+                primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
                 showsLastTrained: hasFingerprint
@@ -140,7 +140,7 @@ extension AppStatus {
             return MenuBarPresentation(
                 statusLine: hasFingerprint ? "🟢 Listening" : "⚪ Training Needed",
                 primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
-                primaryActionTitle: hasFingerprint ? "Train Again…" : "Train Panic Cough…",
+                primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
                 showsListeningToggle: hasFingerprint,
                 listeningToggleTitle: "Pause Listening",
                 showsLastTrained: hasFingerprint

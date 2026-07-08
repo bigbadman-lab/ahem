@@ -74,7 +74,7 @@ private struct OnboardingWelcomeView: View {
                 .foregroundStyle(.secondary)
 
             VStack(spacing: 8) {
-                Text("Hide your browser instantly using your own panic cough.")
+                Text("Hide your browser instantly using your own cough.")
                 Text("Everything stays on your Mac.")
                 Text("No recordings are stored.")
             }
@@ -107,7 +107,7 @@ private struct OnboardingPermissionDeniedView: View {
                 .fontWeight(.semibold)
                 .multilineTextAlignment(.center)
 
-            Text("Ahem needs microphone access to learn your panic cough and listen for it locally.\n\nYour audio never leaves your Mac.")
+            Text("Ahem needs microphone access to learn your unique cough and listen for it locally.\n\nYour audio never leaves your Mac.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -140,7 +140,7 @@ private struct OnboardingCompletionView: View {
                 .fontWeight(.semibold)
                 .multilineTextAlignment(.center)
 
-            Text("Your Mac now knows your panic cough.\n\nAhem is now listening quietly from your menu bar.")
+            Text("Your Mac now knows your cough.\n\nAhem is now listening quietly from your menu bar.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
