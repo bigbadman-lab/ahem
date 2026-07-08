@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import os
 
 enum MicrophonePermissionStatus: Equatable, CustomStringConvertible {
     case notDetermined
@@ -35,21 +36,37 @@ final class AudioCaptureService {
 
     // Lazy: do not create AVAudioEngine / touch input hardware until permission is granted.
     private var engine: AVAudioEngine?
+    /// Session commitment flag. Only set true after tap install + verified running engine.
     private var captureSessionActive = false
     private let logInterval: TimeInterval = 3
     private var isTapInstalled = false
     private var bufferCount = 0
     private var lastLogDate: Date?
 
+    // Swift 6-safe scoped lock protecting capture-active state and first-buffer wait.
+    private let captureStateLock = OSAllocatedUnfairLock()
+    private var bufferSerial: UInt64 = 0
+    private var bufferSerialAtLastStart: UInt64 = 0
+    private var firstBufferWaitContinuation: CheckedContinuation<Bool, Never>?
+
+    /// Single source of truth for live capture.
+    /// True only when session committed, tap installed, engine exists, and engine.isRunning.
     var isCapturing: Bool {
-        captureSessionActive && isTapInstalled && engine != nil
+        captureStateLock.withLock { isCapturingUnlocked() }
     }
 
     var inputSampleRate: Double? {
-        guard isCapturing, let engine else { return nil }
-        let sampleRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
-        guard sampleRate.isFinite, sampleRate > 0 else { return nil }
-        return sampleRate
+        captureStateLock.withLock { () -> Double? in
+            guard isCapturingUnlocked(), let engine else { return nil }
+            let sampleRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
+            guard sampleRate.isFinite, sampleRate > 0 else { return nil }
+            return sampleRate
+        }
+    }
+
+    private func isCapturingUnlocked() -> Bool {
+        guard captureSessionActive, isTapInstalled, let engine else { return false }
+        return engine.isRunning
     }
 
     static func currentPermissionStatus() -> MicrophonePermissionStatus {
@@ -311,32 +328,26 @@ final class AudioCaptureService {
             return
         }
 
-        if isTapInstalled {
-            removeTapIfNeeded()
+        // Tear down any half-started session before recreating the engine.
+        captureStateLock.withLock {
+            captureSessionActive = false
+            bufferSerialAtLastStart = bufferSerial
         }
-
-        captureSessionActive = false
+        if isTapInstalled || engine != nil {
+            cleanupFailedCaptureStart(reason: "resetting before fresh start")
+        }
 
         #if DEBUG
         print("[AudioCapture] Creating AVAudioEngine (permission granted path)")
         #endif
-        engine = AVAudioEngine()
+        let newEngine = AVAudioEngine()
+        engine = newEngine
 
         #if DEBUG
         print("[AudioCapture] Starting audio engine")
         #endif
 
-        guard let engine else {
-            captureSessionActive = false
-            throw AudioCaptureError.engineStartFailed(
-                underlying: NSError(
-                    domain: "AudioCaptureService",
-                    code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "AVAudioEngine could not be created."]
-                )
-            )
-        }
-        let inputNode = engine.inputNode
+        let inputNode = newEngine.inputNode
         #if DEBUG
         print("[AudioCapture] Accessing inputNode.outputFormat")
         #endif
@@ -344,11 +355,9 @@ final class AudioCaptureService {
         guard format.sampleRate.isFinite,
               format.sampleRate > 0,
               format.channelCount > 0 else {
-            self.engine = nil
-            captureSessionActive = false
-            #if DEBUG
-            print("[AudioCapture] Invalid input format — sampleRate: \(format.sampleRate), channels: \(format.channelCount)")
-            #endif
+            cleanupFailedCaptureStart(
+                reason: "invalid input format sampleRate=\(format.sampleRate) channels=\(format.channelCount)"
+            )
             throw AudioCaptureError.invalidInputFormat
         }
 
@@ -358,28 +367,33 @@ final class AudioCaptureService {
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.handleBuffer(buffer)
         }
-        isTapInstalled = true
+        captureStateLock.withLock {
+            isTapInstalled = true
+        }
 
         do {
-            engine.prepare()
-            try engine.start()
+            newEngine.prepare()
+            try newEngine.start()
         } catch {
-            removeTapIfNeeded()
-            self.engine = nil
-            captureSessionActive = false
-            #if DEBUG
-            print("[AudioCapture] Failed to start audio engine: \(error.localizedDescription)")
-            #endif
+            cleanupFailedCaptureStart(
+                reason: "engine.start() threw: \(error.localizedDescription)"
+            )
             throw AudioCaptureError.engineStartFailed(underlying: error)
         }
 
-        guard engine.isRunning else {
-            removeTapIfNeeded()
-            self.engine = nil
-            captureSessionActive = false
-            #if DEBUG
-            print("[AudioCapture] Engine start returned without isRunning=true — treating as failure")
-            #endif
+        // Commit capture as active only if the engine is still running under the same lock
+        // used by external `isCapturing` reads — never return success with a false external state.
+        let committed = captureStateLock.withLock { () -> Bool in
+            guard isTapInstalled, let engine, engine === newEngine, engine.isRunning else {
+                captureSessionActive = false
+                return false
+            }
+            captureSessionActive = true
+            return isCapturingUnlocked()
+        }
+
+        guard committed else {
+            cleanupFailedCaptureStart(reason: "engine.isRunning=false after start")
             throw AudioCaptureError.engineStartFailed(
                 underlying: NSError(
                     domain: "AudioCaptureService",
@@ -389,18 +403,67 @@ final class AudioCaptureService {
             )
         }
 
-        captureSessionActive = true
-
         #if DEBUG
+        let snapshot = captureActivitySnapshot()
         print(
             "[AudioCapture] Audio engine started — "
-                + "captureActive=\(isCapturing), isRunning=\(engine.isRunning)"
+                + "captureActive=\(snapshot.isCapturing), isRunning=\(snapshot.isRunning)"
         )
         #endif
     }
 
+    /// Snapshot of capture activity using the same lock as `isCapturing`.
+    func captureActivitySnapshot() -> (isCapturing: Bool, isRunning: Bool, tapInstalled: Bool) {
+        captureStateLock.withLock {
+            (
+                isCapturing: isCapturingUnlocked(),
+                isRunning: engine?.isRunning ?? false,
+                tapInstalled: isTapInstalled
+            )
+        }
+    }
+
+    private func cleanupFailedCaptureStart(reason: String) {
+        #if DEBUG
+        if reason != "resetting before fresh start" {
+            print("[AudioCapture] Audio engine start failed — \(reason)")
+            print("[AudioCapture] Cleaning up failed capture start")
+        }
+        #endif
+
+        let continuationToResume = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
+            captureSessionActive = false
+            let pending = firstBufferWaitContinuation
+            firstBufferWaitContinuation = nil
+            return pending
+        }
+        continuationToResume?.resume(returning: false)
+
+        removeTapIfNeeded()
+        if let engine {
+            if engine.isRunning {
+                engine.stop()
+            }
+        }
+        engine = nil
+        bufferCount = 0
+        lastLogDate = nil
+    }
+
     func stopCapture() {
-        guard captureSessionActive || isTapInstalled || engine != nil else {
+        // If someone is waiting for a first buffer, stop that wait immediately.
+        let continuationToResume = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
+            captureSessionActive = false
+            let pending = firstBufferWaitContinuation
+            firstBufferWaitContinuation = nil
+            return pending
+        }
+        continuationToResume?.resume(returning: false)
+
+        let shouldStop = captureStateLock.withLock {
+            isTapInstalled || engine != nil
+        }
+        guard shouldStop else {
             #if DEBUG
             print("[AudioCapture] Audio engine already stopped — stop ignored")
             #endif
@@ -411,7 +474,6 @@ final class AudioCaptureService {
         print("[AudioCapture] Stopping audio engine")
         #endif
 
-        captureSessionActive = false
         removeTapIfNeeded()
         if let engine, engine.isRunning {
             engine.stop()
@@ -426,19 +488,18 @@ final class AudioCaptureService {
     }
 
     private func removeTapIfNeeded() {
-        guard isTapInstalled else { return }
-
-        if let engine {
-            #if DEBUG
-            print("[AudioCapture] Removing input tap (onBus=0)")
-            #endif
-            engine.inputNode.removeTap(onBus: 0)
-        } else {
-            #if DEBUG
-            print("[AudioCapture] Clearing stale tap flag — engine already nil")
-            #endif
+        let engineForTap: AVAudioEngine? = captureStateLock.withLock {
+            guard isTapInstalled else { return nil }
+            let current = engine
+            isTapInstalled = false
+            return current
         }
-        isTapInstalled = false
+        guard let engineForTap else { return }
+
+        #if DEBUG
+        print("[AudioCapture] Removing input tap (onBus=0)")
+        #endif
+        engineForTap.inputNode.removeTap(onBus: 0)
     }
 
     private func handleBuffer(_ buffer: AVAudioPCMBuffer) {
@@ -447,9 +508,63 @@ final class AudioCaptureService {
             return
         }
 
+        let continuationToResume = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
+            bufferSerial &+= 1
+            let pending = firstBufferWaitContinuation
+            firstBufferWaitContinuation = nil
+            return pending
+        }
+
         bufferCount += 1
         logBufferActivity(frameLength: buffer.frameLength)
         onBuffer?(buffer)
+
+        continuationToResume?.resume(returning: true)
+    }
+
+    /// Waits briefly for the first live audio buffer to arrive after the most recent `startCapture()` call.
+    /// - Returns: `true` if a buffer arrived before timeout, otherwise `false`.
+    func waitForFirstBufferAfterStart(timeout: TimeInterval) async -> Bool {
+        let timeoutSeconds = max(0, timeout)
+        if timeoutSeconds == 0 {
+            return false
+        }
+
+        let alreadyHasBuffer = captureStateLock.withLock {
+            bufferSerial > bufferSerialAtLastStart
+        }
+        if alreadyHasBuffer {
+            return true
+        }
+
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let shouldResumeNow = captureStateLock.withLock { () -> Bool in
+                // Re-check while holding the lock (covers "buffer arrived just before we installed the continuation").
+                if bufferSerial > bufferSerialAtLastStart {
+                    return true
+                }
+                firstBufferWaitContinuation = continuation
+                return false
+            }
+
+            if shouldResumeNow {
+                continuation.resume(returning: true)
+                return
+            }
+
+            Task {
+                let nanos = UInt64(timeoutSeconds * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: nanos)
+
+                let timeoutContinuation = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
+                    let pending = firstBufferWaitContinuation
+                    firstBufferWaitContinuation = nil
+                    return pending
+                }
+
+                timeoutContinuation?.resume(returning: false)
+            }
+        }
     }
 
     private func logBufferActivity(frameLength: AVAudioFrameCount) {
