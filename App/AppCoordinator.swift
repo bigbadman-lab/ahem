@@ -38,6 +38,7 @@ final class AppCoordinator: ObservableObject {
     private let trainingCompleteDisplayDuration: TimeInterval = 2.0
     private let panicDetectedDisplayDuration: TimeInterval = 1.0
     private let listeningBufferWaitTimeout: TimeInterval = 3.0
+    private let postTrainingAudioCleanupDelay: TimeInterval = 0.5
 
     private var listeningStartupTask: Task<Void, Never>?
     private var trainingModalActive = false
@@ -366,7 +367,7 @@ final class AppCoordinator: ObservableObject {
         dismissTrainingUI()
 
         if appState.status != .listening {
-            scheduleListeningStartup(reason: .postTraining)
+            schedulePostTrainingListening()
         }
 
         #if DEBUG
@@ -387,7 +388,7 @@ final class AppCoordinator: ObservableObject {
 
         case .completion:
             dismissTrainingUI()
-            scheduleListeningStartup(reason: .postTraining)
+            schedulePostTrainingListening()
 
         case .welcome, .permissionDenied:
             break
@@ -505,7 +506,7 @@ final class AppCoordinator: ObservableObject {
                     reason: "training window closed after success",
                     options: .init(force: true, postTrainingExit: true)
                 )
-                scheduleListeningStartup(reason: .postTraining)
+                schedulePostTrainingListening()
             }
         } else {
             _ = transition(to: .needsTraining, reason: "training window closed after success", options: .init(force: true))
@@ -582,22 +583,66 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
-    /// Single-path listening startup for launch and post-training.
+    /// Post-training: fully tear down training audio, pause briefly, then cold-start listening.
+    private func schedulePostTrainingListening() {
+        guard !isStartingListening else {
+            print("[Startup] post-training listening ignored — startup already in progress")
+            return
+        }
+
+        cancelListeningStartup()
+        listeningStartupTask = Task { [weak self] in
+            await self?.runPostTrainingListeningStartup()
+        }
+    }
+
+    private func runPostTrainingListeningStartup() async {
+        isStartingListening = true
+        defer { isStartingListening = false }
+
+        guard !Task.isCancelled else { return }
+
+        print("[Training] stopping training audio session")
+        activeSampleCollector = nil
+        activeSampleCapture = nil
+        audioPipeline.setSampleCollector(nil)
+        clearDetectionForListeningRestart()
+        audioCaptureService.stopCapture(reason: "post-training teardown")
+        print("[Training] training audio fully stopped")
+
+        let cleanupNanos = UInt64(postTrainingAudioCleanupDelay * 1_000_000_000)
+        try? await Task.sleep(nanoseconds: cleanupNanos)
+
+        guard !Task.isCancelled else { return }
+
+        print("[Training] starting fresh listening session")
+        await startListeningFromSavedFingerprint(reason: .postTraining)
+    }
+
+    /// Entry for cold launch / reopen. Post-training uses `runPostTrainingListeningStartup()` first.
     private func startListening(reason: ListeningStartupReason) async {
         isStartingListening = true
         defer { isStartingListening = false }
 
         guard !Task.isCancelled else { return }
 
-        if isSetupOrTrainingInProgress, reason != .postTraining {
+        if isSetupOrTrainingInProgress {
             #if DEBUG
             print("[Startup] Listening deferred — training in progress")
             #endif
             return
         }
 
+        await startListeningFromSavedFingerprint(reason: reason)
+    }
+
+    /// Shared listening startup from a clean audio slate (same path for reopen and post-training).
+    private func startListeningFromSavedFingerprint(reason: ListeningStartupReason) async {
         guard panicFingerprintStore.load() != nil else {
             transition(to: .needsTraining, reason: "listening startup — no fingerprint")
+            if reason == .postTraining {
+                print("[Startup] post-training failed: no saved fingerprint")
+            }
             return
         }
 
@@ -606,10 +651,22 @@ final class AppCoordinator: ObservableObject {
             break
         case .notDetermined:
             transition(to: .microphonePermissionNeeded, reason: "listening startup — permission not determined")
+            if reason == .postTraining {
+                print("[Startup] post-training failed: microphone permission not determined")
+            }
             return
         case .denied:
             transition(to: .microphonePermissionDenied, reason: "listening startup — permission denied")
+            if reason == .postTraining {
+                print("[Startup] post-training failed: microphone permission denied")
+            }
             return
+        }
+
+        if reason == .postTraining {
+            print("[Startup] post-training using saved fingerprint")
+        } else if panicFingerprintStore.hasStoredData {
+            print("[Startup] starting from saved fingerprint")
         }
 
         _ = transition(
@@ -628,26 +685,34 @@ final class AppCoordinator: ObservableObject {
                 timeout: listeningBufferWaitTimeout,
                 generation: captureGeneration
             ) else {
-                #if DEBUG
-                print("[Startup] No first audio buffer received")
-                #endif
                 clearDetectionForListeningRestart()
                 audioCaptureService.stopCapture(reason: "no first buffer")
+                if reason == .postTraining {
+                    print("[Startup] post-training failed: no first processed buffer")
+                }
                 return
             }
 
             guard !Task.isCancelled else { return }
+
+            if reason == .postTraining {
+                print("[Startup] post-training first buffer confirmed")
+            }
 
             guard attachDetection() else {
-                #if DEBUG
-                print("[Startup] Detection attach failed")
-                #endif
                 clearDetectionForListeningRestart()
                 audioCaptureService.stopCapture(reason: "detector attach failed")
+                if reason == .postTraining {
+                    print("[Startup] post-training failed: detector attach failed")
+                }
                 return
             }
 
             guard !Task.isCancelled else { return }
+
+            if reason == .postTraining {
+                print("[Startup] post-training detector attached")
+            }
 
             _ = transition(
                 to: .listening,
@@ -655,13 +720,21 @@ final class AppCoordinator: ObservableObject {
                 options: .init(force: reason == .postTraining, postTrainingExit: reason == .postTraining)
             )
 
-            print("[Startup] ready")
+            if reason == .postTraining {
+                print("[Startup] ready after training")
+            } else {
+                print("[Startup] ready")
+            }
         } catch {
-            #if DEBUG
-            print("[Startup] Listening startup failed: \(error.localizedDescription)")
-            #endif
             clearDetectionForListeningRestart()
             audioCaptureService.stopCapture(reason: "listening startup failed")
+            if reason == .postTraining {
+                print("[Startup] post-training failed: \(error.localizedDescription)")
+            } else {
+                #if DEBUG
+                print("[Startup] Listening startup failed: \(error.localizedDescription)")
+                #endif
+            }
         }
     }
 
@@ -1305,6 +1378,9 @@ final class AppCoordinator: ObservableObject {
 
         isTraining = false
         explicitTrainingStartInProgress = false
+        activeSampleCollector = nil
+        activeSampleCapture = nil
+        audioPipeline.setSampleCollector(nil)
         endTrainingModal()
         dismissTrainingUI()
 
@@ -1322,7 +1398,7 @@ final class AppCoordinator: ObservableObject {
         )
 
         print("[Training] post-training start listening requested")
-        scheduleListeningStartup(reason: .postTraining)
+        schedulePostTrainingListening()
     }
 
     private func failTraining(_ message: String) {
