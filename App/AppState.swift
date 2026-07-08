@@ -115,7 +115,7 @@ extension AppStatus {
                 showsLastTrained: hasFingerprint
             )
 
-        case .needsTraining, .starting:
+        case .needsTraining:
             return MenuBarPresentation(
                 statusLine: "⚪ Training Needed",
                 primaryAction: .trainPanicCough,
@@ -126,6 +126,19 @@ extension AppStatus {
                 listeningToggleTitle: "",
                 showsResumeToggle: false,
                 showsLastTrained: false
+            )
+
+        case .starting:
+            return MenuBarPresentation(
+                statusLine: hasFingerprint ? "🟡 Starting" : "⚪ Training Needed",
+                primaryAction: hasFingerprint ? nil : .trainPanicCough,
+                primaryActionTitle: hasFingerprint ? "" : "Train your cough…",
+                secondaryAction: nil,
+                secondaryActionTitle: "",
+                showsListeningToggle: false,
+                listeningToggleTitle: "",
+                showsResumeToggle: false,
+                showsLastTrained: hasFingerprint
             )
 
         case .microphonePermissionNeeded, .microphonePermissionDenied:

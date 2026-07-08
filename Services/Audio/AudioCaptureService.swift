@@ -57,7 +57,8 @@ final class AudioCaptureService {
     private let captureStateLock = OSAllocatedUnfairLock()
     private var bufferSerial: UInt64 = 0
     private var bufferSerialAtLastStart: UInt64 = 0
-    private var firstBufferWaitContinuation: CheckedContinuation<Bool, Never>?
+    private var firstProcessedBufferWaitContinuation: CheckedContinuation<Bool, Never>?
+    private var firstProcessedBufferWaitTimeoutTask: Task<Void, Never>?
 
     /// Single source of truth for live capture.
     /// True only when session committed, tap installed, engine exists, and engine.isRunning.
@@ -489,11 +490,18 @@ final class AudioCaptureService {
 
         let continuationToResume = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
             captureSessionActive = false
-            let pending = firstBufferWaitContinuation
-            firstBufferWaitContinuation = nil
+            let pending = firstProcessedBufferWaitContinuation
+            firstProcessedBufferWaitContinuation = nil
             return pending
         }
+        firstProcessedBufferWaitTimeoutTask?.cancel()
+        firstProcessedBufferWaitTimeoutTask = nil
         continuationToResume?.resume(returning: false)
+        #if DEBUG
+        if continuationToResume != nil {
+            print("[AudioCapture] First buffer wait cancelled")
+        }
+        #endif
 
         removeTapIfNeeded()
         if let engine {
@@ -513,11 +521,18 @@ final class AudioCaptureService {
         // If someone is waiting for a first buffer, stop that wait immediately.
         let continuationToResume = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
             captureSessionActive = false
-            let pending = firstBufferWaitContinuation
-            firstBufferWaitContinuation = nil
+            let pending = firstProcessedBufferWaitContinuation
+            firstProcessedBufferWaitContinuation = nil
             return pending
         }
+        firstProcessedBufferWaitTimeoutTask?.cancel()
+        firstProcessedBufferWaitTimeoutTask = nil
         continuationToResume?.resume(returning: false)
+        #if DEBUG
+        if continuationToResume != nil {
+            print("[AudioCapture] First buffer wait cancelled")
+        }
+        #endif
 
         let shouldStop = captureStateLock.withLock {
             isTapInstalled || engine != nil
@@ -575,8 +590,8 @@ final class AudioCaptureService {
 
         let continuationToResume = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
             bufferSerial &+= 1
-            let pending = firstBufferWaitContinuation
-            firstBufferWaitContinuation = nil
+            let pending = firstProcessedBufferWaitContinuation
+            firstProcessedBufferWaitContinuation = nil
             return pending
         }
 
@@ -587,7 +602,14 @@ final class AudioCaptureService {
         )
         onBuffer?(processed)
 
-        continuationToResume?.resume(returning: true)
+        if let continuationToResume {
+            firstProcessedBufferWaitTimeoutTask?.cancel()
+            firstProcessedBufferWaitTimeoutTask = nil
+            #if DEBUG
+            print("[AudioCapture] First processed buffer received")
+            #endif
+            continuationToResume.resume(returning: true)
+        }
     }
 
     private func normalizedBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
@@ -639,9 +661,9 @@ final class AudioCaptureService {
         }
     }
 
-    /// Waits briefly for the first live audio buffer to arrive after the most recent `startCapture()` call.
-    /// - Returns: `true` if a buffer arrived before timeout, otherwise `false`.
-    func waitForFirstBufferAfterStart(timeout: TimeInterval) async -> Bool {
+    /// Waits for the first normalized mono 16 kHz buffer after the most recent `startCapture()`.
+    /// - Returns: `true` when a valid processed buffer arrived before timeout, otherwise `false`.
+    func waitForFirstProcessedBuffer(timeout: TimeInterval) async -> Bool {
         let timeoutSeconds = max(0, timeout)
         if timeoutSeconds == 0 {
             return false
@@ -651,37 +673,57 @@ final class AudioCaptureService {
             bufferSerial > bufferSerialAtLastStart
         }
         if alreadyHasBuffer {
+            #if DEBUG
+            print("[AudioCapture] First processed buffer received")
+            #endif
             return true
         }
 
+        #if DEBUG
+        print("[AudioCapture] Waiting for first processed buffer")
+        #endif
+
         return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             let shouldResumeNow = captureStateLock.withLock { () -> Bool in
-                // Re-check while holding the lock (covers "buffer arrived just before we installed the continuation").
                 if bufferSerial > bufferSerialAtLastStart {
                     return true
                 }
-                firstBufferWaitContinuation = continuation
+                firstProcessedBufferWaitContinuation = continuation
                 return false
             }
 
             if shouldResumeNow {
+                #if DEBUG
+                print("[AudioCapture] First processed buffer received")
+                #endif
                 continuation.resume(returning: true)
                 return
             }
 
-            Task {
+            firstProcessedBufferWaitTimeoutTask?.cancel()
+            firstProcessedBufferWaitTimeoutTask = Task {
                 let nanos = UInt64(timeoutSeconds * 1_000_000_000)
                 try? await Task.sleep(nanoseconds: nanos)
 
                 let timeoutContinuation = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
-                    let pending = firstBufferWaitContinuation
-                    firstBufferWaitContinuation = nil
+                    let pending = firstProcessedBufferWaitContinuation
+                    firstProcessedBufferWaitContinuation = nil
                     return pending
                 }
 
-                timeoutContinuation?.resume(returning: false)
+                guard let timeoutContinuation else { return }
+
+                #if DEBUG
+                print("[AudioCapture] First buffer wait timed out")
+                #endif
+                timeoutContinuation.resume(returning: false)
             }
         }
+    }
+
+    /// Backward-compatible alias used by older call sites.
+    func waitForFirstBufferAfterStart(timeout: TimeInterval) async -> Bool {
+        await waitForFirstProcessedBuffer(timeout: timeout)
     }
 
     private func logBufferActivity(
