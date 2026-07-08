@@ -29,6 +29,7 @@ final class AppCoordinator: ObservableObject {
     private var detectionResetTask: Task<Void, Never>?
     private var trainingInputLevelSmoothed: Double = 0
     private var isStartingListening = false
+    private var explicitTrainingStartInProgress = false
 
     private let trainingRecordingWindowSeconds: TimeInterval = 5.0
     private let trainingCountdownSeconds = 5
@@ -40,8 +41,12 @@ final class AppCoordinator: ObservableObject {
 
     private var listeningStartupTask: Task<Void, Never>?
     private var trainingModalActive = false
-    private var trainingTimeoutTask: Task<Void, Never>?
-    private let trainingTimeoutDuration: TimeInterval = 120
+    private var trainingWatchdogTask: Task<Void, Never>?
+    private var startingWatchdogTask: Task<Void, Never>?
+    private var startingWatchdogRetried = false
+    private let trainingWatchdogDuration: TimeInterval = 90
+    private let startingWatchdogDuration: TimeInterval = 15
+    private let trainingTimeoutDuration: TimeInterval = 90
 
     private enum ListeningStartupReason: String {
         case startup
@@ -78,6 +83,16 @@ final class AppCoordinator: ObservableObject {
         options: AppStateMachine.Options = .init()
     ) -> Bool {
         let current = appState.status
+
+        if AppStateMachine.phase(of: newStatus) == .training, !options.userInitiated {
+            AppStateMachine.logBlocked(
+                from: current,
+                to: newStatus,
+                reason: "automatic transition to training blocked"
+            )
+            print("[StateMachine] BLOCKED automatic transition to training")
+            return false
+        }
 
         if trainingModalActive,
            !options.force,
@@ -117,8 +132,26 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func handleStatusSideEffects(from: AppStatus, to: AppStatus) {
+        if AppStateMachine.phase(of: from) == .training {
+            cancelTrainingWatchdog()
+        }
+
+        if AppStateMachine.phase(of: to) == .training {
+            scheduleTrainingWatchdog()
+        }
+
+        if AppStateMachine.phase(of: from) == .starting {
+            cancelStartingWatchdog()
+            startingWatchdogRetried = false
+        }
+
+        if AppStateMachine.phase(of: to) == .starting {
+            scheduleStartingWatchdog()
+        }
+
         if AppStateMachine.phase(of: to) == .listening {
             endTrainingModal()
+            cancelStartingWatchdog()
         }
 
         if AppStateMachine.phase(of: to) == .trainingFailed {
@@ -126,10 +159,70 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
+    private func scheduleTrainingWatchdog() {
+        trainingWatchdogTask?.cancel()
+        trainingWatchdogTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(self?.trainingWatchdogDuration ?? 90))
+            guard let self, !Task.isCancelled else { return }
+            guard AppStateMachine.phase(of: self.appState.status) == .training else { return }
+
+            print("[StateMachine] training watchdog fired")
+            self.failTraining("Training timed out. Please try again.")
+        }
+    }
+
+    private func cancelTrainingWatchdog() {
+        trainingWatchdogTask?.cancel()
+        trainingWatchdogTask = nil
+    }
+
+    private func scheduleStartingWatchdog() {
+        startingWatchdogTask?.cancel()
+        startingWatchdogTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(self?.startingWatchdogDuration ?? 15))
+            guard let self, !Task.isCancelled else { return }
+            guard case .starting = self.appState.status else { return }
+            guard self.panicFingerprintStore.load() != nil else { return }
+
+            print("[StateMachine] starting watchdog fired")
+
+            if !self.startingWatchdogRetried {
+                self.startingWatchdogRetried = true
+                self.scheduleListeningStartup(reason: .startup)
+                return
+            }
+
+            switch AudioCaptureService.currentPermissionStatus() {
+            case .denied:
+                _ = self.transition(
+                    to: .microphonePermissionDenied,
+                    reason: "starting watchdog — microphone permission denied",
+                    options: .init(force: true)
+                )
+            case .notDetermined:
+                _ = self.transition(
+                    to: .microphonePermissionNeeded,
+                    reason: "starting watchdog — microphone permission needed",
+                    options: .init(force: true)
+                )
+            case .granted:
+                _ = self.transition(
+                    to: .microphonePermissionNeeded,
+                    reason: "starting watchdog — listening could not start",
+                    options: .init(force: true)
+                )
+            }
+        }
+    }
+
+    private func cancelStartingWatchdog() {
+        startingWatchdogTask?.cancel()
+        startingWatchdogTask = nil
+    }
+
     private func beginTrainingModal(reason: String) {
         trainingModalActive = true
         cancelListeningStartup()
-        scheduleTrainingTimeout()
         _ = transition(
             to: .training(sample: 1, total: 3),
             reason: reason,
@@ -140,20 +233,7 @@ final class AppCoordinator: ObservableObject {
     private func endTrainingModal() {
         guard trainingModalActive else { return }
         trainingModalActive = false
-        trainingTimeoutTask?.cancel()
-        trainingTimeoutTask = nil
-    }
-
-    private func scheduleTrainingTimeout() {
-        trainingTimeoutTask?.cancel()
-        trainingTimeoutTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(self?.trainingTimeoutDuration ?? 120))
-            guard let self, !Task.isCancelled else { return }
-            guard self.trainingModalActive || self.isTraining else { return }
-
-            AppStateMachine.logTimeout("training timed out", reason: "training session exceeded timeout")
-            self.failTraining("Training timed out. Please try again.")
-        }
+        cancelTrainingWatchdog()
     }
 
     private func cancelListeningStartup() {
@@ -178,16 +258,13 @@ final class AppCoordinator: ObservableObject {
         appState.onboardingPhase != .idle
     }
 
-    /// True while onboarding/training UI owns the microphone and listening must not race it.
+    /// True while an active training session owns the microphone and listening must not race it.
     private var isSetupOrTrainingInProgress: Bool {
-        if isTraining { return true }
-        if isOnboardingSessionActive { return true }
-        switch appState.trainingUIPhase {
-        case .idle:
-            return false
-        case .welcome, .countdown, .listening, .preparingNextSample, .succeeded, .succeededListeningActive, .failed:
-            return true
-        }
+        isTraining || trainingModalActive
+    }
+
+    private var suppressBackgroundStatusChanges: Bool {
+        trainingModalActive || isTraining || explicitTrainingStartInProgress
     }
 
     func prepareOnboarding() {
@@ -195,7 +272,7 @@ final class AppCoordinator: ObservableObject {
     }
 
     /// Evaluates permission + fingerprint once at launch and queues a setup window if needed.
-    /// Does not request microphone permission.
+    /// Does not request microphone permission or enter Training automatically.
     func evaluateStartupSetupPresentation() {
         guard !didEvaluateStartupSetup else {
             #if DEBUG
@@ -230,16 +307,13 @@ final class AppCoordinator: ObservableObject {
             }
 
             #if DEBUG
-            print("[Onboarding] Permission granted but no fingerprint — presenting training/setup")
+            print("[Onboarding] Permission granted but no fingerprint — presenting setup UI")
             #endif
             if onboardingStore.hasCompletedOnboarding {
                 prepareTrainingUI()
                 appState.setupPresentationRequest = .training
             } else {
-                // First-run / incomplete setup: keep the onboarding shell and go to training welcome.
-                appState.onboardingPhase = .training
-                appState.trainingUIPhase = .welcome
-                beginTrainingModal(reason: "startup onboarding training welcome")
+                prepareOnboarding()
                 appState.setupPresentationRequest = .onboarding
             }
 
@@ -290,7 +364,10 @@ final class AppCoordinator: ObservableObject {
         onboardingStore.markCompleted()
         appState.onboardingPhase = .idle
         dismissTrainingUI()
-        scheduleListeningStartup(reason: .postTraining)
+
+        if appState.status != .listening {
+            scheduleListeningStartup(reason: .postTraining)
+        }
 
         #if DEBUG
         print("[Onboarding] Onboarding completed")
@@ -336,10 +413,10 @@ final class AppCoordinator: ObservableObject {
     private func enterOnboardingTrainingWelcome() {
         appState.onboardingPhase = .training
         appState.trainingUIPhase = .welcome
-        beginTrainingModal(reason: "onboarding enter training welcome")
+        _ = transition(to: .needsTraining, reason: "onboarding — awaiting explicit training start")
 
         #if DEBUG
-        print("[Onboarding] Listening deferred — setup/training in progress")
+        print("[Onboarding] Training welcome shown — waiting for user to start training")
         #endif
     }
 
@@ -376,9 +453,6 @@ final class AppCoordinator: ObservableObject {
 
     func prepareTrainingUI() {
         appState.trainingUIPhase = .welcome
-        if !trainingModalActive {
-            beginTrainingModal(reason: "prepare training UI")
-        }
     }
 
     func dismissTrainingUI() {
@@ -420,14 +494,27 @@ final class AppCoordinator: ObservableObject {
 
     private func finishSuccessfulTrainingOnWindowClose() {
         trainingTask?.cancel()
+        isTraining = false
         dismissTrainingUI()
-        if !isTraining {
-            scheduleListeningStartup(reason: .postTraining)
+        endTrainingModal()
+
+        if panicFingerprintStore.load() != nil {
+            if appState.status != .listening {
+                _ = transition(
+                    to: .starting,
+                    reason: "training window closed after success",
+                    options: .init(force: true, postTrainingExit: true)
+                )
+                scheduleListeningStartup(reason: .postTraining)
+            }
+        } else {
+            _ = transition(to: .needsTraining, reason: "training window closed after success", options: .init(force: true))
         }
     }
 
     private func cancelTrainingSession() {
         trainingTask?.cancel()
+        explicitTrainingStartInProgress = false
         activeSampleCapture?.resume(with: [])
 
         if activeSampleCollector != nil {
@@ -441,6 +528,13 @@ final class AppCoordinator: ObservableObject {
         resetTrainingInputLevel()
         dismissTrainingUI()
         endTrainingModal()
+
+        if panicFingerprintStore.load() != nil {
+            _ = transition(to: .starting, reason: "training cancelled", options: .init(force: true))
+            scheduleListeningStartup(reason: .startup)
+        } else {
+            _ = transition(to: .needsTraining, reason: "training cancelled", options: .init(force: true))
+        }
 
         #if DEBUG
         print("[Training] Training cancellation complete")
@@ -497,15 +591,13 @@ final class AppCoordinator: ObservableObject {
 
         if isSetupOrTrainingInProgress, reason != .postTraining {
             #if DEBUG
-            print("[Startup] Listening deferred — setup/training in progress")
+            print("[Startup] Listening deferred — training in progress")
             #endif
             return
         }
 
         guard panicFingerprintStore.load() != nil else {
-            if !trainingModalActive {
-                transition(to: .needsTraining, reason: "listening startup — no fingerprint")
-            }
+            transition(to: .needsTraining, reason: "listening startup — no fingerprint")
             return
         }
 
@@ -520,13 +612,11 @@ final class AppCoordinator: ObservableObject {
             return
         }
 
-        if !trainingModalActive {
-            _ = transition(
-                to: .starting,
-                reason: "listening startup (\(reason.rawValue))",
-                options: .init(postTrainingExit: reason == .postTraining)
-            )
-        }
+        _ = transition(
+            to: .starting,
+            reason: "listening startup (\(reason.rawValue))",
+            options: .init(force: reason == .postTraining, postTrainingExit: reason == .postTraining)
+        )
 
         clearDetectionForListeningRestart()
         audioCaptureService.stopCapture(reason: "listening startup (\(reason.rawValue))")
@@ -562,12 +652,10 @@ final class AppCoordinator: ObservableObject {
             _ = transition(
                 to: .listening,
                 reason: "listening ready (\(reason.rawValue))",
-                options: .init(postTrainingExit: reason == .postTraining)
+                options: .init(force: reason == .postTraining, postTrainingExit: reason == .postTraining)
             )
 
-            #if DEBUG
-            print("[Startup] Listening ready")
-            #endif
+            print("[Startup] ready")
         } catch {
             #if DEBUG
             print("[Startup] Listening startup failed: \(error.localizedDescription)")
@@ -791,17 +879,38 @@ final class AppCoordinator: ObservableObject {
         print("[Startup] App launch started (accessory / menu bar mode)")
         #endif
 
+        deriveLaunchState()
         evaluateStartupSetupPresentation()
 
         Task {
             refreshLastTrainedDate()
-            guard !isSetupOrTrainingInProgress else {
-                #if DEBUG
-                print("[AppStartup] Startup listening skipped — setup/training in progress")
-                #endif
-                return
-            }
             await beginAudioCapture()
+        }
+    }
+
+    /// Derives initial status from persisted facts only. Never restores Training.
+    private func deriveLaunchState() {
+        let permission = AudioCaptureService.currentPermissionStatus()
+        let hasFingerprint = panicFingerprintStore.load() != nil
+
+        print(
+            "[StateMachine] launch derived state — "
+                + "fingerprintExists=\(hasFingerprint), micPermission=\(permission)"
+        )
+
+        appState.onboardingPhase = .idle
+        appState.trainingUIPhase = .idle
+        isTraining = false
+        trainingModalActive = false
+        explicitTrainingStartInProgress = false
+
+        switch permission {
+        case .granted:
+            appState.status = hasFingerprint ? .starting : .needsTraining
+        case .notDetermined:
+            appState.status = hasFingerprint ? .starting : .needsTraining
+        case .denied:
+            appState.status = .microphonePermissionDenied
         }
     }
 
@@ -813,8 +922,12 @@ final class AppCoordinator: ObservableObject {
             return
         }
 
+        explicitTrainingStartInProgress = true
         Task { [weak self] in
             await self?.startTrainingAfterPermissionCheck()
+            if self?.isTraining != true, self?.trainingModalActive != true {
+                self?.explicitTrainingStartInProgress = false
+            }
         }
     }
 
@@ -840,10 +953,12 @@ final class AppCoordinator: ObservableObject {
             presentMicrophoneDeniedForTraining()
 
         case .notDetermined:
-            transition(
-                to: .microphonePermissionNeeded,
-                reason: "training start permission request failed"
-            )
+            if !suppressBackgroundStatusChanges {
+                transition(
+                    to: .microphonePermissionNeeded,
+                    reason: "training start permission request failed"
+                )
+            }
             appState.trainingUIPhase = .failed(
                 "Microphone permission could not be requested. Try Grant Microphone Permission… from the menu."
             )
@@ -853,13 +968,12 @@ final class AppCoordinator: ObservableObject {
     private func beginTrainingSession() {
         guard !isTraining else { return }
 
-        #if DEBUG
-        print("[Training] Preparing audio capture for training")
-        #endif
+        print("[Training] explicit training started")
+        explicitTrainingStartInProgress = false
 
         cancelListeningStartup()
         stopListeningCaptureIfNeeded(reason: "training session starting")
-        beginTrainingModal(reason: "training session started")
+        beginTrainingModal(reason: "explicit user training start")
 
         do {
             try prepareAudioCaptureForTraining()
@@ -867,11 +981,6 @@ final class AppCoordinator: ObservableObject {
             failTraining(error.localizedDescription)
             return
         }
-
-        #if DEBUG
-        print("[Training] Audio capture ready for training")
-        print("[Training] Detection paused")
-        #endif
 
         trainingTask?.cancel()
         isTraining = true
@@ -937,7 +1046,9 @@ final class AppCoordinator: ObservableObject {
             return .granted
 
         case .denied:
-            transition(to: .microphonePermissionDenied, reason: "permission denied (\(callSite))")
+            if !suppressBackgroundStatusChanges {
+                transition(to: .microphonePermissionDenied, reason: "permission denied (\(callSite))")
+            }
             if openSettingsIfDenied {
                 #if DEBUG
                 print("[Permission] Opening System Settings because permission is denied (callSite=\(callSite))")
@@ -948,14 +1059,18 @@ final class AppCoordinator: ObservableObject {
 
         case .notDetermined:
             guard requestIfNeeded else {
-                transition(to: .microphonePermissionNeeded, reason: "permission not determined (\(callSite))")
+                if !suppressBackgroundStatusChanges {
+                    transition(to: .microphonePermissionNeeded, reason: "permission not determined (\(callSite))")
+                }
                 #if DEBUG
                 print("[Permission] notDetermined — not requesting (callSite=\(callSite))")
                 #endif
                 return .notDetermined
             }
 
-            transition(to: .microphonePermissionNeeded, reason: "requesting microphone permission (\(callSite))")
+            if !suppressBackgroundStatusChanges {
+                transition(to: .microphonePermissionNeeded, reason: "requesting microphone permission (\(callSite))")
+            }
 
             #if DEBUG
             print("[Permission] Status is notDetermined — calling native request API (callSite=\(callSite))")
@@ -972,18 +1087,24 @@ final class AppCoordinator: ObservableObject {
                 return .granted
 
             case .denied:
-                transition(to: .microphonePermissionDenied, reason: "permission denied after request (\(callSite))")
+                if !suppressBackgroundStatusChanges {
+                    transition(to: .microphonePermissionDenied, reason: "permission denied after request (\(callSite))")
+                }
                 return .denied
 
             case .notDetermined:
-                transition(to: .microphonePermissionNeeded, reason: "permission still not determined (\(callSite))")
+                if !suppressBackgroundStatusChanges {
+                    transition(to: .microphonePermissionNeeded, reason: "permission still not determined (\(callSite))")
+                }
                 return .notDetermined
             }
         }
     }
 
     private func presentMicrophoneDeniedForTraining() {
-        transition(to: .microphonePermissionDenied, reason: "training denied — microphone permission")
+        if !suppressBackgroundStatusChanges {
+            transition(to: .microphonePermissionDenied, reason: "training denied — microphone permission")
+        }
         appState.trainingUIPhase = .failed(
             "Microphone access is required to train your cough.\n\nEnable Ahem in System Settings → Privacy & Security → Microphone."
         )
@@ -1007,29 +1128,23 @@ final class AppCoordinator: ObservableObject {
     /// Never prompts — permission dialogs are user-action only.
     private func beginAudioCapture() async {
         if panicFingerprintStore.hasStoredData {
-            #if DEBUG
-            print("[AppStartup] Stored fingerprint exists")
-            #endif
+            print("[Startup] starting from saved fingerprint")
         }
 
         let permission = AudioCaptureService.currentPermissionStatus()
-        #if DEBUG
-        print("[AppStartup] Microphone permission status: \(permission)")
-        #endif
 
         if isSetupOrTrainingInProgress {
             #if DEBUG
-            print("[AppStartup] Listening deferred — setup/training in progress")
+            print("[Startup] Listening deferred — training in progress")
             #endif
             return
         }
 
         switch permission {
         case .notDetermined:
-            transition(to: .microphonePermissionNeeded, reason: "startup — microphone permission not determined")
-            #if DEBUG
-            print("[AppStartup] Microphone permission notDetermined — detection inactive until user grants")
-            #endif
+            if !suppressBackgroundStatusChanges {
+                transition(to: .microphonePermissionNeeded, reason: "startup — microphone permission not determined")
+            }
 
         case .granted:
             guard panicFingerprintStore.load() != nil else {
@@ -1040,10 +1155,9 @@ final class AppCoordinator: ObservableObject {
             scheduleListeningStartup(reason: .startup)
 
         case .denied:
-            transition(to: .microphonePermissionDenied, reason: "startup — microphone permission denied")
-            #if DEBUG
-            print("[AppStartup] Startup failed: microphone permission denied")
-            #endif
+            if !suppressBackgroundStatusChanges {
+                transition(to: .microphonePermissionDenied, reason: "startup — microphone permission denied")
+            }
         }
     }
 
@@ -1174,59 +1288,53 @@ final class AppCoordinator: ObservableObject {
             appState.lastTrainedAt = fingerprint.createdAt
             playTrainingConfirmationSoundIfEnabled()
 
-            if isOnboardingSessionActive {
-                appState.onboardingPhase = .completion
-                appState.trainingUIPhase = .idle
+            print("[Training] sample 3 complete")
+            print("[Training] fingerprint saved")
 
-                #if DEBUG
-                print("[Onboarding] Training complete — showing completion screen")
-                print("[Training] Training completed")
-                print(
-                    "[Training] Saved panic fingerprint v\(fingerprint.version) "
-                        + "processingSampleRate=\(String(format: "%.0f", fingerprint.processingSampleRate)) "
-                        + "with averageRMS: \(fingerprint.averageRMS), "
-                        + "consistency: \(String(format: "%.2f", fingerprint.trainingConsistency))"
-                )
-                #endif
-                return
-            }
-
-            _ = transition(to: .trainingComplete, reason: "training samples saved")
-            appState.trainingUIPhase = .succeeded
-
-            #if DEBUG
-            print("[Training] Training completed")
-            print(
-                "[Training] Saved panic fingerprint v\(fingerprint.version) "
-                    + "processingSampleRate=\(String(format: "%.0f", fingerprint.processingSampleRate)) "
-                    + "with averageRMS: \(fingerprint.averageRMS), "
-                    + "consistency: \(String(format: "%.2f", fingerprint.trainingConsistency))"
-            )
-            #endif
+            finishTrainingAndStartListening(onboardingCompletion: isOnboardingSessionActive)
         } catch {
             #if DEBUG
             print("[Training] Training failed — \(error.localizedDescription)")
             #endif
             failTraining(error.localizedDescription)
-            return
+        }
+    }
+
+    private func finishTrainingAndStartListening(onboardingCompletion: Bool) {
+        print("[Training] exiting training state")
+
+        isTraining = false
+        explicitTrainingStartInProgress = false
+        endTrainingModal()
+        dismissTrainingUI()
+
+        if onboardingCompletion {
+            appState.onboardingPhase = .completion
+            appState.trainingUIPhase = .idle
+        } else {
+            appState.trainingUIPhase = .succeeded
         }
 
-        try? await Task.sleep(for: .seconds(trainingCompleteDisplayDuration))
-        guard !Task.isCancelled else { return }
+        _ = transition(
+            to: .starting,
+            reason: "training complete — starting listening",
+            options: .init(force: true, postTrainingExit: true)
+        )
 
-        appState.trainingUIPhase = .succeededListeningActive
-
-        #if DEBUG
-        print("[Training] Training complete — starting reliable listening")
-        #endif
-
+        print("[Training] post-training start listening requested")
         scheduleListeningStartup(reason: .postTraining)
     }
 
     private func failTraining(_ message: String) {
+        isTraining = false
+        explicitTrainingStartInProgress = false
         endTrainingModal()
         _ = transition(to: .trainingFailed(message), reason: message, options: .init(force: true))
         appState.trainingUIPhase = .failed(message)
+
+        if panicFingerprintStore.load() != nil {
+            scheduleListeningStartup(reason: .startup)
+        }
     }
 
     private enum TrainingCaptureResult {

@@ -106,6 +106,10 @@ enum AppStateMachine {
         case (.trainingFailed, .training):
             return options.userInitiated
 
+        case (.trainingFailed, .starting),
+             (.trainingFailed, .listening):
+            return true
+
         case (.listening, .paused),
              (.listening, .audioError),
              (.listening, .panicDetected):
@@ -142,21 +146,15 @@ enum AppStateMachine {
     }
 
     static func logTransition(from: AppStatus, to: AppStatus, reason: String) {
-        #if DEBUG
         print("[StateMachine] \(describe(from)) -> \(describe(to)) | reason: \(reason)")
-        #endif
     }
 
     static func logBlocked(from: AppStatus, to: AppStatus, reason: String) {
-        #if DEBUG
         print("[StateMachine] BLOCKED \(describe(from)) -> \(describe(to)) | reason: \(reason)")
-        #endif
     }
 
     static func logTimeout(_ message: String, reason: String) {
-        #if DEBUG
         print("[StateMachine] \(message) | reason: \(reason)")
-        #endif
     }
 
     private static func describe(_ status: AppStatus) -> String {
