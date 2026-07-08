@@ -1181,9 +1181,12 @@ final class AppCoordinator: ObservableObject {
         appState.status = .listening
 
         #if DEBUG
+        let hardwareRate = audioCaptureService.hardwareSampleRate ?? 0
         print(
             "[Detection] configureDetection complete — detector attached, "
-                + "sampleRate=\(String(format: "%.0f", sampleRate)), "
+                + "hardwareRate=\(String(format: "%.0f", hardwareRate)), "
+                + "processingRate=\(String(format: "%.0f", sampleRate)), "
+                + "fingerprintRate=\(String(format: "%.0f", fingerprint.processingSampleRate)), "
                 + "captureActive=\(audioCaptureService.isCapturing), status=listening"
         )
         #endif
@@ -1338,6 +1341,7 @@ final class AppCoordinator: ObservableObject {
                 print("[Training] Training completed")
                 print(
                     "[Training] Saved panic fingerprint v\(fingerprint.version) "
+                        + "processingSampleRate=\(String(format: "%.0f", fingerprint.processingSampleRate)) "
                         + "with averageRMS: \(fingerprint.averageRMS), "
                         + "consistency: \(String(format: "%.2f", fingerprint.trainingConsistency))"
                 )
@@ -1352,6 +1356,7 @@ final class AppCoordinator: ObservableObject {
             print("[Training] Training completed")
             print(
                 "[Training] Saved panic fingerprint v\(fingerprint.version) "
+                    + "processingSampleRate=\(String(format: "%.0f", fingerprint.processingSampleRate)) "
                     + "with averageRMS: \(fingerprint.averageRMS), "
                     + "consistency: \(String(format: "%.2f", fingerprint.trainingConsistency))"
             )

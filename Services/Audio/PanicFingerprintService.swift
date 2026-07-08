@@ -155,7 +155,8 @@ struct PanicFingerprintService {
             averageBandEnergies: averageBandEnergies,
             averageMfccSummary: averageMfccSummary,
             trainingConsistency: consistency,
-            samples: samples
+            samples: samples,
+            processingSampleRate: PanicFingerprint.canonicalProcessingSampleRate
         )
     }
 

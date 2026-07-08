@@ -81,7 +81,10 @@ final class PanicDetector {
         #if DEBUG
         print(
             "[Detection] Detection resumed "
-                + "(version: \(fingerprint.version), threshold: \(config.threshold), "
+                + "(version: \(fingerprint.version), "
+                + "fingerprintRate=\(String(format: "%.0f", fingerprint.processingSampleRate)), "
+                + "processingRate=\(String(format: "%.0f", sampleRate)), "
+                + "threshold: \(config.threshold), "
                 + "cooldown: \(config.cooldownDuration)s, smoothing: \(config.confidenceHistorySize))"
         )
         #endif

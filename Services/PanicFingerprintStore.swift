@@ -49,7 +49,8 @@ final class PanicFingerprintStore {
         guard fingerprint.version >= PanicFingerprint.currentVersion else {
             #if DEBUG
             print(
-                "[Detection] Legacy fingerprint v\(fingerprint.version) is incompatible — retraining required"
+                "[Detection] Legacy fingerprint v\(fingerprint.version) is incompatible — retraining required "
+                    + "(need v\(PanicFingerprint.currentVersion) @ \(String(format: "%.0f", PanicFingerprint.canonicalProcessingSampleRate))Hz)"
             )
             #endif
             return nil
@@ -57,7 +58,11 @@ final class PanicFingerprintStore {
 
         guard fingerprint.isDetectionCompatible else {
             #if DEBUG
-            print("[Detection] Stored fingerprint is incomplete — retraining required")
+            print(
+                "[Detection] Stored fingerprint incompatible "
+                    + "(sampleRate=\(String(format: "%.0f", fingerprint.processingSampleRate)), "
+                    + "expected=\(String(format: "%.0f", PanicFingerprint.canonicalProcessingSampleRate))) — retraining required"
+            )
             #endif
             return nil
         }
@@ -72,6 +77,7 @@ final class PanicFingerprintStore {
         #if DEBUG
         print(
             "[Detection] Loaded fingerprint v\(fingerprint.version) "
+                + "processingSampleRate=\(String(format: "%.0f", fingerprint.processingSampleRate)) "
                 + "(consistency: \(String(format: "%.2f", fingerprint.trainingConsistency)))"
         )
         #endif

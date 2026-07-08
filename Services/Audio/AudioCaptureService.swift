@@ -19,6 +19,7 @@ enum MicrophonePermissionStatus: Equatable, CustomStringConvertible {
 enum AudioCaptureError: LocalizedError {
     case invalidInputFormat
     case engineStartFailed(underlying: Error)
+    case converterSetupFailed
 
     var errorDescription: String? {
         switch self {
@@ -26,11 +27,16 @@ enum AudioCaptureError: LocalizedError {
             return "Microphone input format is unavailable."
         case .engineStartFailed(let underlying):
             return underlying.localizedDescription
+        case .converterSetupFailed:
+            return "Could not configure audio sample-rate conversion."
         }
     }
 }
 
 final class AudioCaptureService {
+    /// Stable processing rate used for training and detection (mono float PCM).
+    static let targetProcessingSampleRate: Double = 16_000
+
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
     var onError: ((String) -> Void)?
 
@@ -42,6 +48,10 @@ final class AudioCaptureService {
     private var isTapInstalled = false
     private var bufferCount = 0
     private var lastLogDate: Date?
+
+    private var hardwareSampleRateValue: Double = 0
+    private var processingFormat: AVAudioFormat?
+    private var sampleRateConverter: AVAudioConverter?
 
     // Swift 6-safe scoped lock protecting capture-active state and first-buffer wait.
     private let captureStateLock = OSAllocatedUnfairLock()
@@ -55,12 +65,19 @@ final class AudioCaptureService {
         captureStateLock.withLock { isCapturingUnlocked() }
     }
 
+    /// Sample rate used by training/detection after normalization (always 16000 when capturing).
     var inputSampleRate: Double? {
-        captureStateLock.withLock { () -> Double? in
-            guard isCapturingUnlocked(), let engine else { return nil }
-            let sampleRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
-            guard sampleRate.isFinite, sampleRate > 0 else { return nil }
-            return sampleRate
+        captureStateLock.withLock {
+            guard isCapturingUnlocked() else { return nil }
+            return Self.targetProcessingSampleRate
+        }
+    }
+
+    /// Raw microphone hardware sample rate before conversion.
+    var hardwareSampleRate: Double? {
+        captureStateLock.withLock {
+            guard isCapturingUnlocked(), hardwareSampleRateValue > 0 else { return nil }
+            return hardwareSampleRateValue
         }
     }
 
@@ -351,20 +368,57 @@ final class AudioCaptureService {
         #if DEBUG
         print("[AudioCapture] Accessing inputNode.outputFormat")
         #endif
-        let format = inputNode.outputFormat(forBus: 0)
-        guard format.sampleRate.isFinite,
-              format.sampleRate > 0,
-              format.channelCount > 0 else {
+        let hardwareFormat = inputNode.outputFormat(forBus: 0)
+        guard hardwareFormat.sampleRate.isFinite,
+              hardwareFormat.sampleRate > 0,
+              hardwareFormat.channelCount > 0 else {
             cleanupFailedCaptureStart(
-                reason: "invalid input format sampleRate=\(format.sampleRate) channels=\(format.channelCount)"
+                reason: "invalid input format sampleRate=\(hardwareFormat.sampleRate) channels=\(hardwareFormat.channelCount)"
             )
             throw AudioCaptureError.invalidInputFormat
         }
 
+        guard let processingFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: Self.targetProcessingSampleRate,
+            channels: 1,
+            interleaved: false
+        ) else {
+            cleanupFailedCaptureStart(reason: "could not create 16 kHz mono processing format")
+            throw AudioCaptureError.converterSetupFailed
+        }
+
+        let converter: AVAudioConverter?
+        if abs(hardwareFormat.sampleRate - Self.targetProcessingSampleRate) < 0.5,
+           hardwareFormat.channelCount == 1,
+           hardwareFormat.commonFormat == .pcmFormatFloat32 {
+            converter = nil
+        } else {
+            guard let madeConverter = AVAudioConverter(from: hardwareFormat, to: processingFormat) else {
+                cleanupFailedCaptureStart(
+                    reason: "AVAudioConverter setup failed \(hardwareFormat.sampleRate)Hz → \(Self.targetProcessingSampleRate)Hz"
+                )
+                throw AudioCaptureError.converterSetupFailed
+            }
+            converter = madeConverter
+        }
+
+        hardwareSampleRateValue = hardwareFormat.sampleRate
+        self.processingFormat = processingFormat
+        sampleRateConverter = converter
+
         #if DEBUG
+        print(
+            "[AudioCapture] Hardware sample rate=\(String(format: "%.0f", hardwareFormat.sampleRate)) "
+                + "channels=\(hardwareFormat.channelCount)"
+        )
+        print(
+            "[AudioCapture] Normalized processing sample rate=\(String(format: "%.0f", Self.targetProcessingSampleRate)) "
+                + "mono converter=\(converter == nil ? "passthrough" : "active")"
+        )
         print("[AudioCapture] Installing input tap (onBus=0, bufferSize=1024)")
         #endif
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: hardwareFormat) { [weak self] buffer, _ in
             self?.handleBuffer(buffer)
         }
         captureStateLock.withLock {
@@ -407,7 +461,9 @@ final class AudioCaptureService {
         let snapshot = captureActivitySnapshot()
         print(
             "[AudioCapture] Audio engine started — "
-                + "captureActive=\(snapshot.isCapturing), isRunning=\(snapshot.isRunning)"
+                + "captureActive=\(snapshot.isCapturing), isRunning=\(snapshot.isRunning), "
+                + "hardwareRate=\(String(format: "%.0f", hardwareSampleRateValue)), "
+                + "processingRate=\(String(format: "%.0f", Self.targetProcessingSampleRate))"
         )
         #endif
     }
@@ -446,6 +502,9 @@ final class AudioCaptureService {
             }
         }
         engine = nil
+        sampleRateConverter = nil
+        processingFormat = nil
+        hardwareSampleRateValue = 0
         bufferCount = 0
         lastLogDate = nil
     }
@@ -479,6 +538,9 @@ final class AudioCaptureService {
             engine.stop()
         }
         engine = nil
+        sampleRateConverter = nil
+        processingFormat = nil
+        hardwareSampleRateValue = 0
         bufferCount = 0
         lastLogDate = nil
 
@@ -508,6 +570,9 @@ final class AudioCaptureService {
             return
         }
 
+        let sourceFrameLength = buffer.frameLength
+        guard let processed = normalizedBuffer(from: buffer) else { return }
+
         let continuationToResume = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
             bufferSerial &+= 1
             let pending = firstBufferWaitContinuation
@@ -516,10 +581,62 @@ final class AudioCaptureService {
         }
 
         bufferCount += 1
-        logBufferActivity(frameLength: buffer.frameLength)
-        onBuffer?(buffer)
+        logBufferActivity(
+            sourceFrameLength: sourceFrameLength,
+            processedFrameLength: processed.frameLength
+        )
+        onBuffer?(processed)
 
         continuationToResume?.resume(returning: true)
+    }
+
+    private func normalizedBuffer(from buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        // Already at target format — pass through.
+        if sampleRateConverter == nil,
+           abs(buffer.format.sampleRate - Self.targetProcessingSampleRate) < 0.5,
+           buffer.format.channelCount == 1 {
+            return buffer
+        }
+
+        guard let processingFormat, let converter = sampleRateConverter else {
+            return buffer
+        }
+
+        let ratio = processingFormat.sampleRate / max(buffer.format.sampleRate, 1)
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
+        guard let converted = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: capacity) else {
+            return nil
+        }
+
+        var error: NSError?
+        var consumedSource = false
+        let inputBlock: AVAudioConverterInputBlock = { _, outStatus in
+            if consumedSource {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            consumedSource = true
+            outStatus.pointee = .haveData
+            return buffer
+        }
+
+        let status = converter.convert(to: converted, error: &error, withInputFrom: inputBlock)
+        if let error {
+            #if DEBUG
+            print("[AudioCapture] Sample-rate conversion failed: \(error.localizedDescription)")
+            #endif
+            return nil
+        }
+
+        switch status {
+        case .haveData, .inputRanDry:
+            guard converted.frameLength > 0 else { return nil }
+            return converted
+        case .error, .endOfStream:
+            return nil
+        @unknown default:
+            return nil
+        }
     }
 
     /// Waits briefly for the first live audio buffer to arrive after the most recent `startCapture()` call.
@@ -567,7 +684,10 @@ final class AudioCaptureService {
         }
     }
 
-    private func logBufferActivity(frameLength: AVAudioFrameCount) {
+    private func logBufferActivity(
+        sourceFrameLength: AVAudioFrameCount,
+        processedFrameLength: AVAudioFrameCount
+    ) {
         let now = Date()
         if let lastLogDate, now.timeIntervalSince(lastLogDate) < logInterval {
             return
@@ -577,7 +697,11 @@ final class AudioCaptureService {
         #if DEBUG
         print(
             "[AudioCapture] \(bufferCount) buffers received "
-                + "(latest frameLength: \(frameLength), captureActive: \(isCapturing))"
+                + "(hardwareFrames: \(sourceFrameLength), "
+                + "processingFrames: \(processedFrameLength), "
+                + "hardwareRate: \(String(format: "%.0f", hardwareSampleRateValue)), "
+                + "processingRate: \(String(format: "%.0f", Self.targetProcessingSampleRate)), "
+                + "captureActive: \(isCapturing))"
         )
         #endif
     }

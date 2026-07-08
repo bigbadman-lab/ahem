@@ -118,7 +118,9 @@ struct SampleFeatures: Codable, Equatable {
 }
 
 struct PanicFingerprint: Codable, Equatable {
-    static let currentVersion = 3
+    static let currentVersion = 4
+    /// Canonical processing rate for training/detection (must match AudioCaptureService).
+    static let canonicalProcessingSampleRate: Double = AudioCaptureService.targetProcessingSampleRate
 
     let version: Int
     let createdAt: Date
@@ -140,9 +142,13 @@ struct PanicFingerprint: Codable, Equatable {
     let averageMfccSummary: [Double]
     let trainingConsistency: Double
     let samples: [SampleFeatures]
+    /// Sample rate used when features were extracted. Legacy fingerprints decode as 0 (unknown).
+    let processingSampleRate: Double
 
     var isDetectionCompatible: Bool {
-        version >= Self.currentVersion && samples.allSatisfy(\.isComplete)
+        version >= Self.currentVersion
+            && samples.allSatisfy(\.isComplete)
+            && abs(processingSampleRate - Self.canonicalProcessingSampleRate) < 0.5
     }
 
     var hasCompleteSpectralProfile: Bool {
@@ -192,7 +198,8 @@ struct PanicFingerprint: Codable, Equatable {
         averageBandEnergies: [Double] = [],
         averageMfccSummary: [Double] = [],
         trainingConsistency: Double,
-        samples: [SampleFeatures]
+        samples: [SampleFeatures],
+        processingSampleRate: Double = PanicFingerprint.canonicalProcessingSampleRate
     ) {
         self.version = version
         self.createdAt = createdAt
@@ -214,6 +221,7 @@ struct PanicFingerprint: Codable, Equatable {
         self.averageMfccSummary = averageMfccSummary
         self.trainingConsistency = trainingConsistency
         self.samples = samples
+        self.processingSampleRate = processingSampleRate
     }
 
     init(from decoder: Decoder) throws {
@@ -238,6 +246,7 @@ struct PanicFingerprint: Codable, Equatable {
         averageMfccSummary = try container.decodeIfPresent([Double].self, forKey: .averageMfccSummary) ?? []
         trainingConsistency = try container.decodeIfPresent(Double.self, forKey: .trainingConsistency) ?? 0
         samples = try container.decode([SampleFeatures].self, forKey: .samples)
+        processingSampleRate = try container.decodeIfPresent(Double.self, forKey: .processingSampleRate) ?? 0
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -261,5 +270,6 @@ struct PanicFingerprint: Codable, Equatable {
         case averageMfccSummary
         case trainingConsistency
         case samples
+        case processingSampleRate
     }
 }
