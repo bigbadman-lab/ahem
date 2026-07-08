@@ -44,6 +44,7 @@ struct OnboardingView: View {
             minWidth: AhemLayout.windowMinWidth,
             minHeight: AhemLayout.trainingWindowMinHeight
         )
+        .keepAhemWindowInFront(titleHint: "Welcome to Ahem")
         .onDisappear {
             coordinator.handleOnboardingWindowClosed()
         }

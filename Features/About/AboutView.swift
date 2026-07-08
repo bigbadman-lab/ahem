@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct AboutView: View {
@@ -8,77 +9,46 @@ struct AboutView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Spacer(minLength: 16)
+            Spacer(minLength: 12)
 
-            header
-                .padding(.top, 48)
-                .padding(.bottom, 24)
+            AhemAppIconView()
+                .padding(.bottom, 16)
+
+            Text("Ahem")
+                .font(.title)
+                .fontWeight(.semibold)
+                .padding(.bottom, 6)
 
             Text(versionString)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .accessibilityLabel(versionString)
+                .padding(.bottom, 20)
+
+            VStack(spacing: 4) {
+                Text("You cough.")
+                Text("Your browser disappears.")
+            }
+            .font(.body)
+            .multilineTextAlignment(.center)
+            .padding(.bottom, 24)
+
+            Link("getahem.com", destination: AboutLinks.website)
+                .font(.body)
                 .padding(.bottom, 28)
 
-            privacySection
-                .padding(.horizontal, 36)
-                .padding(.bottom, 28)
+            Spacer(minLength: 8)
 
-            linksSection
-                .padding(.bottom, 28)
-
-            Spacer(minLength: 16)
-
-            Text("© 2026 Ahem")
+            Text("© 2026")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .padding(.bottom, 24)
+                .padding(.bottom, 20)
         }
         .frame(
             minWidth: AhemLayout.aboutWindowMinWidth,
             minHeight: AhemLayout.aboutWindowMinHeight
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var header: some View {
-        VStack(spacing: 16) {
-            AhemAppIconView()
-
-            VStack(spacing: 6) {
-                Text("Ahem")
-                    .font(.largeTitle)
-                    .fontWeight(.semibold)
-
-                Text("for awkward moments.")
-                    .font(.title3)
-                    .italic()
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .multilineTextAlignment(.center)
-    }
-
-    private var privacySection: some View {
-        VStack(spacing: 6) {
-            Text("Everything happens locally.")
-            Text("Your audio never leaves your Mac.")
-            Text("No recordings are stored.")
-            Text("No cloud.")
-            Text("No analytics.")
-        }
-        .font(.body)
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: .infinity)
-    }
-
-    private var linksSection: some View {
-        VStack(spacing: 10) {
-            Link("getahem.com", destination: AboutLinks.website)
-            Link("X profile", destination: AboutLinks.xProfile)
-            Link("Support", destination: AboutLinks.support)
-        }
-        .font(.body)
+        .keepAhemWindowInFront(titleHint: "About Ahem")
     }
 }
 

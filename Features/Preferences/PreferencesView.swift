@@ -50,6 +50,7 @@ struct PreferencesView: View {
             minWidth: AhemLayout.preferencesWindowMinWidth,
             minHeight: AhemLayout.preferencesWindowMinHeight
         )
+        .keepAhemWindowInFront(titleHint: "Preferences")
         .onAppear {
             refreshLaunchAtLoginState()
         }
@@ -72,9 +73,10 @@ struct PreferencesView: View {
     }
 
     private func presentTraining() {
-        NSApp.activate(ignoringOtherApps: true)
+        AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "Train your cough")
         coordinator.prepareTrainingUI()
         openWindow(id: TrainingWindowID.value)
+        AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "Train your cough")
     }
 }
 

@@ -21,16 +21,33 @@ struct MenuBarView: View {
 
     var body: some View {
         Group {
-            statusSection
-
-            if presentation.showsLastTrained, let lastTrainedAt = appState.lastTrainedAt {
-                lastTrainedSection(date: lastTrainedAt)
-            }
+            statusBlock
 
             Divider()
 
-            primaryActionSection
-            secondaryActionsSection
+            actionsSection
+
+            Divider()
+
+            Button("Preferences…") {
+                presentPreferences()
+            }
+
+            Button("About Ahem") {
+                presentAbout()
+            }
+
+            #if DEBUG
+            Button("Copy Diagnostics") {
+                coordinator.copyDiagnosticsToClipboard()
+            }
+
+            if let confirmation = appState.diagnosticsCopyConfirmation {
+                Text(confirmation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            #endif
 
             Divider()
 
@@ -44,41 +61,31 @@ struct MenuBarView: View {
     }
 
     @ViewBuilder
-    private var statusSection: some View {
-        Text(presentation.statusLine)
-            .font(.headline)
-            .padding(.bottom, 4)
-    }
+    private var statusBlock: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(presentation.statusLine)
+                .font(.headline)
 
-    @ViewBuilder
-    private func lastTrainedSection(date: Date) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Last trained")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            HStack(spacing: 4) {
-                Text(date.formatted(.relative(presentation: .named, unitsStyle: .wide)))
-                Text("•")
+            if presentation.showsLastTrained, let lastTrainedAt = appState.lastTrainedAt {
+                Text("Last trained")
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
-                Text(date.formatted(date: .omitted, time: .shortened))
+                Text(Self.formatLastTrained(lastTrainedAt))
+                    .font(.subheadline)
             }
-            .font(.subheadline)
         }
-        .padding(.bottom, 4)
+        .padding(.vertical, 2)
     }
 
     @ViewBuilder
-    private var primaryActionSection: some View {
+    private var actionsSection: some View {
         if let primaryAction = presentation.primaryAction {
             Button(presentation.primaryActionTitle) {
                 performPrimaryAction(primaryAction)
             }
             .disabled(coordinator.isTrainingSessionActive)
         }
-    }
 
-    @ViewBuilder
-    private var secondaryActionsSection: some View {
         if presentation.showsListeningToggle {
             Button(presentation.listeningToggleTitle) {
                 coordinator.pauseListening()
@@ -86,23 +93,11 @@ struct MenuBarView: View {
             .disabled(coordinator.isTrainingSessionActive)
         }
 
-        Button("Preferences…") {
-            presentPreferences()
-        }
-
-        Button("About Ahem") {
-            presentAbout()
-        }
-
-        // TEMP: Release diagnostics — remove when Debug vs Release comparison is complete.
-        Button("Copy Diagnostics") {
-            coordinator.copyDiagnosticsToClipboard()
-        }
-
-        if let confirmation = appState.diagnosticsCopyConfirmation {
-            Text(confirmation)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        if presentation.showsResumeToggle {
+            Button("Resume Listening") {
+                coordinator.resumeListening()
+            }
+            .disabled(coordinator.isTrainingSessionActive)
         }
     }
 
@@ -118,19 +113,32 @@ struct MenuBarView: View {
     }
 
     private func presentTraining() {
-        bringAppForwardForSetupWindow()
+        AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "Train your cough")
         coordinator.prepareTrainingUI()
         openWindow(id: TrainingWindowID.value)
+        AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "Train your cough")
     }
 
     private func presentPreferences() {
-        bringAppForwardForSetupWindow()
+        AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "Preferences")
         openWindow(id: PreferencesWindowID.value)
+        AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "Preferences")
     }
 
     private func presentAbout() {
-        bringAppForwardForSetupWindow()
+        AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "About Ahem")
         openWindow(id: AboutWindowID.value)
+        AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "About Ahem")
+    }
+
+    private static func formatLastTrained(_ date: Date) -> String {
+        let time = date.formatted(date: .omitted, time: .shortened)
+        if Calendar.current.isDateInToday(date) {
+            return "Today at \(time)"
+        }
+
+        let day = date.formatted(.dateTime.day().month(.abbreviated).year())
+        return "\(day) at \(time)"
     }
 }
 
@@ -163,7 +171,7 @@ struct MenuBarStatusLabel: View {
     private var menuBarAccessibilityLabel: String {
         switch appState.menuDisplayStatus {
         case .listening, .panicDetected:
-            return "Ahem — Listening"
+            return "Ahem — Ready"
         case .paused:
             return "Ahem — Paused"
         case .training, .trainingComplete:
@@ -187,10 +195,9 @@ struct MenuBarStatusLabel: View {
             return
         }
 
-        bringAppForwardForSetupWindow()
-
         switch request {
         case .onboarding:
+            AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "Welcome to Ahem")
             if appState.onboardingPhase == .idle {
                 coordinator.prepareOnboarding()
             }
@@ -201,11 +208,14 @@ struct MenuBarStatusLabel: View {
                 print("[Onboarding] Already presented — bringing existing window forward")
                 #endif
                 existing.makeKeyAndOrderFront(nil)
+                existing.orderFrontRegardless()
             } else {
                 openWindow(id: OnboardingWindowID.value)
             }
+            AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "Welcome to Ahem")
 
         case .training:
+            AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "Train your cough")
             if appState.trainingUIPhase == .idle {
                 coordinator.prepareTrainingUI()
             }
@@ -216,29 +226,13 @@ struct MenuBarStatusLabel: View {
                 print("[Onboarding] Already presented — bringing existing training window forward")
                 #endif
                 existing.makeKeyAndOrderFront(nil)
+                existing.orderFrontRegardless()
             } else {
                 openWindow(id: TrainingWindowID.value)
             }
+            AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "Train your cough")
         }
 
         coordinator.markStartupSetupPresented()
-    }
-}
-
-@MainActor
-private func bringAppForwardForSetupWindow() {
-    // Accessory / LSUIElement apps need a brief activation so setup windows appear in front.
-    let previousPolicy = NSApp.activationPolicy()
-    if previousPolicy != .regular {
-        NSApp.setActivationPolicy(.regular)
-    }
-    NSApp.activate(ignoringOtherApps: true)
-
-    // Restore accessory shortly after the window is ordered front.
-    if previousPolicy != .regular {
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(500))
-            NSApp.setActivationPolicy(.accessory)
-        }
     }
 }

@@ -53,6 +53,7 @@ struct MenuBarPresentation: Equatable {
     let primaryActionTitle: String
     let showsListeningToggle: Bool
     let listeningToggleTitle: String
+    let showsResumeToggle: Bool
     let showsLastTrained: Bool
 }
 
@@ -77,6 +78,7 @@ extension AppStatus {
                 primaryActionTitle: "",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
+                showsResumeToggle: false,
                 showsLastTrained: hasFingerprint
             )
         }
@@ -84,21 +86,23 @@ extension AppStatus {
         switch self {
         case .listening, .panicDetected:
             return MenuBarPresentation(
-                statusLine: "🟢 Listening",
+                statusLine: "🟢 Ready",
                 primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
                 primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
                 showsListeningToggle: true,
                 listeningToggleTitle: "Pause Listening",
+                showsResumeToggle: false,
                 showsLastTrained: hasFingerprint
             )
 
         case .paused:
             return MenuBarPresentation(
                 statusLine: "⏸ Paused",
-                primaryAction: .resumeListening,
-                primaryActionTitle: "Resume Listening",
+                primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
+                primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
+                showsResumeToggle: true,
                 showsLastTrained: hasFingerprint
             )
 
@@ -109,6 +113,7 @@ extension AppStatus {
                 primaryActionTitle: "Train your cough…",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
+                showsResumeToggle: false,
                 showsLastTrained: false
             )
 
@@ -119,6 +124,7 @@ extension AppStatus {
                 primaryActionTitle: "Grant Microphone Permission…",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
+                showsResumeToggle: false,
                 showsLastTrained: hasFingerprint
             )
 
@@ -129,6 +135,7 @@ extension AppStatus {
                 primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
+                showsResumeToggle: false,
                 showsLastTrained: hasFingerprint
             )
 
@@ -139,16 +146,18 @@ extension AppStatus {
                 primaryActionTitle: "",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
+                showsResumeToggle: false,
                 showsLastTrained: hasFingerprint
             )
 
         case .trainingFailed:
             return MenuBarPresentation(
-                statusLine: hasFingerprint ? "🟢 Listening" : "⚪ Training Needed",
+                statusLine: hasFingerprint ? "🟢 Ready" : "⚪ Training Needed",
                 primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
                 primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
                 showsListeningToggle: hasFingerprint,
                 listeningToggleTitle: "Pause Listening",
+                showsResumeToggle: false,
                 showsLastTrained: hasFingerprint
             )
         }

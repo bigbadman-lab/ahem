@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct TrainingView: View {
@@ -23,6 +24,10 @@ struct TrainingView: View {
             minWidth: AhemLayout.windowMinWidth,
             minHeight: AhemLayout.trainingWindowMinHeight
         )
+        .onAppear {
+            guard handlesWindowLifecycle else { return }
+            AhemWindowActivation.bringAppWindowsForward(preferredTitleHint: "Train your cough")
+        }
         .onDisappear {
             guard handlesWindowLifecycle else { return }
             coordinator.handleTrainingWindowClosed()
