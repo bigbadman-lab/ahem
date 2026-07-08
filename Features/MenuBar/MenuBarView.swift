@@ -13,7 +13,7 @@ struct MenuBarView: View {
     }
 
     private var presentation: MenuBarPresentation {
-        appState.status.menuPresentation(
+        appState.menuDisplayStatus.menuPresentation(
             hasFingerprint: coordinator.hasStoredFingerprint,
             isTrainingSessionActive: coordinator.isTrainingSessionActive
         )
@@ -149,7 +149,7 @@ struct MenuBarStatusLabel: View {
 
     var body: some View {
         Image("MenuBarIcon")
-            .accessibilityLabel("Ahem")
+            .accessibilityLabel(menuBarAccessibilityLabel)
             .onAppear {
                 coordinator.start()
                 presentPendingStartupSetupIfNeeded()
@@ -158,6 +158,23 @@ struct MenuBarStatusLabel: View {
                 guard request != nil else { return }
                 presentPendingStartupSetupIfNeeded()
             }
+    }
+
+    private var menuBarAccessibilityLabel: String {
+        switch appState.menuDisplayStatus {
+        case .listening, .panicDetected:
+            return "Ahem — Listening"
+        case .paused:
+            return "Ahem — Paused"
+        case .training, .trainingComplete:
+            return "Ahem — Training"
+        case .microphonePermissionNeeded, .microphonePermissionDenied:
+            return "Ahem — Microphone Permission Required"
+        case .needsTraining, .starting:
+            return "Ahem — Setup Needed"
+        default:
+            return "Ahem"
+        }
     }
 
     private func presentPendingStartupSetupIfNeeded() {

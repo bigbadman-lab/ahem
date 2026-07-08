@@ -30,10 +30,15 @@ final class AppCoordinator: ObservableObject {
     private var detectionResetTask: Task<Void, Never>?
     private var trainingInputLevelSmoothed: Double = 0
 
-    private let pauseResumeSettleWindow: TimeInterval = 0.75
+    private var pauseResumeSettleWindow: TimeInterval = 0.75
     private var lastPauseCompletedAt: Date?
     private var isPausing = false
     private var isResuming = false
+    private var menuStatusCommitTask: Task<Void, Never>?
+    private let menuListeningCommitDebounce: TimeInterval = 0.35
+    private var heldMenuStatusDuringResume: AppStatus?
+    private var menuStatusCancellables = Set<AnyCancellable>()
+    private var didBindMenuDisplayStatus = false
 
     private let trainingRecordingWindowSeconds: TimeInterval = 5.0
     private let trainingCountdownSeconds = 5
@@ -63,6 +68,86 @@ final class AppCoordinator: ObservableObject {
         }
     }
 
+    private func bindMenuDisplayStatusIfNeeded() {
+        guard !didBindMenuDisplayStatus else { return }
+        didBindMenuDisplayStatus = true
+
+        // Seed current display from the current stable status.
+        appState.menuDisplayStatus = appState.status
+
+        appState.$status
+            .receive(on: RunLoop.main)
+            .sink { [weak self] newStatus in
+                self?.syncMenuDisplayStatus(with: newStatus)
+            }
+            .store(in: &menuStatusCancellables)
+    }
+
+    private func syncMenuDisplayStatus(with newStatus: AppStatus) {
+        menuStatusCommitTask?.cancel()
+        menuStatusCommitTask = nil
+
+        if isResuming {
+            // Hold a stable paused presentation until resume finishes.
+            let held = heldMenuStatusDuringResume ?? .paused
+            if appState.menuDisplayStatus != held {
+                appState.menuDisplayStatus = held
+                #if DEBUG
+                print("[MenuStatus] Holding previous stable status during resume")
+                #endif
+            }
+            return
+        }
+
+        switch newStatus {
+        case .listening, .panicDetected:
+            // Debounce brief listening flashes (e.g. attach-then-retry) so the menu doesn't flicker.
+            menuStatusCommitTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(self?.menuListeningCommitDebounce ?? 0.35))
+                guard !Task.isCancelled, let self, !self.isResuming else { return }
+                guard self.appState.status == .listening || self.appState.status == .panicDetected else {
+                    return
+                }
+                self.commitMenuDisplayStatus(.listening)
+            }
+
+        case .paused:
+            commitMenuDisplayStatus(.paused)
+
+        case .starting, .needsTraining, .training, .trainingComplete, .trainingFailed,
+             .microphonePermissionNeeded, .microphonePermissionDenied, .audioError:
+            commitMenuDisplayStatus(newStatus)
+        }
+    }
+
+    private func commitMenuDisplayStatus(_ status: AppStatus) {
+        guard appState.menuDisplayStatus != status else { return }
+        appState.menuDisplayStatus = status
+        #if DEBUG
+        switch status {
+        case .listening, .panicDetected:
+            print("[MenuStatus] Display status updated to listening")
+        case .paused:
+            print("[MenuStatus] Display status updated to paused")
+        default:
+            break
+        }
+        #endif
+    }
+
+    private func beginResumeMenuHold() {
+        heldMenuStatusDuringResume = .paused
+        commitMenuDisplayStatus(.paused)
+        #if DEBUG
+        print("[MenuStatus] Holding previous stable status during resume")
+        #endif
+    }
+
+    private func endResumeMenuHoldAndCommit() {
+        heldMenuStatusDuringResume = nil
+        syncMenuDisplayStatus(with: appState.status)
+    }
+
     var isTrainingSessionActive: Bool {
         isTraining || appState.status.isTrainingSessionActive
     }
@@ -78,6 +163,18 @@ final class AppCoordinator: ObservableObject {
 
     var isOnboardingSessionActive: Bool {
         appState.onboardingPhase != .idle
+    }
+
+    /// True while onboarding/training UI owns the microphone and listening must not race it.
+    private var isSetupOrTrainingInProgress: Bool {
+        if isTraining { return true }
+        if isOnboardingSessionActive { return true }
+        switch appState.trainingUIPhase {
+        case .idle:
+            return false
+        case .welcome, .countdown, .listening, .preparingNextSample, .succeeded, .succeededListeningActive, .failed:
+            return true
+        }
     }
 
     func prepareOnboarding() {
@@ -158,6 +255,11 @@ final class AppCoordinator: ObservableObject {
 
         switch permission {
         case .granted:
+            #if DEBUG
+            print("[Onboarding] Permission granted — starting training flow")
+            #endif
+            // Do not start listening here. Training owns the mic until setup completes.
+            stopListeningCaptureIfNeeded(reason: "permission granted during onboarding")
             enterOnboardingTrainingWelcome()
 
         case .denied:
@@ -226,10 +328,29 @@ final class AppCoordinator: ObservableObject {
     private func enterOnboardingTrainingWelcome() {
         appState.onboardingPhase = .training
         appState.trainingUIPhase = .welcome
+        appState.status = .needsTraining
 
         #if DEBUG
-        print("[Onboarding] Permission granted — showing training welcome screen")
+        print("[Onboarding] Listening deferred — setup/training in progress")
         #endif
+    }
+
+    private func stopListeningCaptureIfNeeded(reason: String) {
+        let hadDetector = panicDetector != nil
+        let wasCapturing = audioCaptureService.isCapturing
+        guard hadDetector || wasCapturing else { return }
+
+        #if DEBUG
+        print("[Training] Stopping listening capture before training (\(reason))")
+        #endif
+
+        detectionResetTask?.cancel()
+        detectionResetTask = nil
+        panicDetector?.stop()
+        panicDetector = nil
+        audioPipeline.setDetector(nil)
+        // Keep capture running if possible — training can reuse it — but if detection was wired,
+        // clear detector so buffers are not consumed for listening during setup.
     }
 
     var isLaunchAtLoginEnabled: Bool {
@@ -348,6 +469,7 @@ final class AppCoordinator: ObservableObject {
         audioCaptureService.stopCapture()
         appState.status = .paused
         lastPauseCompletedAt = Date()
+        endResumeMenuHoldAndCommit()
 
         #if DEBUG
         print("[Listening] Detection paused")
@@ -375,6 +497,7 @@ final class AppCoordinator: ObservableObject {
             return
         }
 
+        beginResumeMenuHold()
         isResuming = true
         Task { [weak self] in
             await self?.resumeListeningAfterPauseGuard()
@@ -382,7 +505,10 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func resumeListeningAfterPauseGuard() async {
-        defer { isResuming = false }
+        defer {
+            isResuming = false
+            endResumeMenuHoldAndCommit()
+        }
 
         guard appState.status == .paused else {
             #if DEBUG
@@ -567,6 +693,13 @@ final class AppCoordinator: ObservableObject {
 
     @discardableResult
     private func restoreListeningAfterCaptureStart(callSite: String) -> Bool {
+        if isSetupOrTrainingInProgress {
+            #if DEBUG
+            print("[Startup] Listening deferred — setup/training in progress")
+            #endif
+            return false
+        }
+
         do {
             if !audioCaptureService.isCapturing {
                 try audioCaptureService.startCapture()
@@ -705,7 +838,13 @@ final class AppCoordinator: ObservableObject {
             print("[Permission] Menu action result=\(permission)")
             #endif
             if permission == .granted {
-                await beginAudioCapture()
+                if isSetupOrTrainingInProgress {
+                    #if DEBUG
+                    print("[Startup] Listening deferred — setup/training in progress")
+                    #endif
+                } else {
+                    await beginAudioCapture()
+                }
             }
         }
     }
@@ -717,6 +856,8 @@ final class AppCoordinator: ObservableObject {
     func start() {
         guard !didStart else { return }
         didStart = true
+
+        bindMenuDisplayStatusIfNeeded()
 
         NSApplication.shared.setActivationPolicy(.accessory)
 
@@ -778,21 +919,22 @@ final class AppCoordinator: ObservableObject {
     private func beginTrainingSession() {
         guard !isTraining else { return }
 
-        if !audioCaptureService.isCapturing {
-            do {
-                try audioCaptureService.startCapture()
-            } catch {
-                appState.status = .audioError(error.localizedDescription)
-                appState.trainingUIPhase = .failed(error.localizedDescription)
-                return
-            }
+        #if DEBUG
+        print("[Training] Preparing audio capture for training")
+        #endif
+
+        stopListeningCaptureIfNeeded(reason: "training session starting")
+
+        do {
+            try prepareAudioCaptureForTraining()
+        } catch {
+            appState.status = .audioError(error.localizedDescription)
+            appState.trainingUIPhase = .failed(error.localizedDescription)
+            return
         }
 
-        panicDetector?.stop()
-        panicDetector = nil
-        audioPipeline.setDetector(nil)
-
         #if DEBUG
+        print("[Training] Audio capture ready for training")
         print("[Training] Detection paused")
         #endif
 
@@ -800,6 +942,41 @@ final class AppCoordinator: ObservableObject {
         isTraining = true
         trainingTask = Task { [weak self] in
             await self?.runTrainingSession()
+        }
+    }
+
+    /// Ensures a live capture session owned by training, restarting once if needed.
+    private func prepareAudioCaptureForTraining() throws {
+        // If listening left a half-dead session, tear it down so training owns a clean engine.
+        if audioCaptureService.isCapturing, audioCaptureService.inputSampleRate == nil {
+            #if DEBUG
+            print("[Training] Stopping listening capture before training (capture active but sample rate unavailable)")
+            #endif
+            audioCaptureService.stopCapture()
+        }
+
+        if !audioCaptureService.isCapturing {
+            try audioCaptureService.startCapture()
+        }
+
+        if audioCaptureService.inputSampleRate != nil {
+            return
+        }
+
+        #if DEBUG
+        print("[Training] Sample rate unavailable after start — restarting capture once for training")
+        #endif
+        audioCaptureService.stopCapture()
+        try audioCaptureService.startCapture()
+
+        guard audioCaptureService.isCapturing, audioCaptureService.inputSampleRate != nil else {
+            throw AudioCaptureError.engineStartFailed(
+                underlying: NSError(
+                    domain: "AppCoordinator",
+                    code: 10,
+                    userInfo: [NSLocalizedDescriptionKey: "Microphone input is unavailable."]
+                )
+            )
         }
     }
 
@@ -898,6 +1075,13 @@ final class AppCoordinator: ObservableObject {
         print("[Startup] Checking microphone permission (status only — will not request)")
         #endif
 
+        if isSetupOrTrainingInProgress {
+            #if DEBUG
+            print("[Startup] Listening deferred — setup/training in progress")
+            #endif
+            return
+        }
+
         switch AudioCaptureService.currentPermissionStatus() {
         case .notDetermined:
             appState.status = .microphonePermissionNeeded
@@ -917,6 +1101,13 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func startCapture() {
+        if isSetupOrTrainingInProgress {
+            #if DEBUG
+            print("[Startup] Listening deferred — setup/training in progress")
+            #endif
+            return
+        }
+
         #if DEBUG
         print("[Startup] Starting audio capture")
         #endif
@@ -933,6 +1124,13 @@ final class AppCoordinator: ObservableObject {
                 + "captureActive=\(audioCaptureService.isCapturing)"
         )
         #endif
+
+        if isSetupOrTrainingInProgress {
+            #if DEBUG
+            print("[Startup] Listening deferred — setup/training in progress")
+            #endif
+            return false
+        }
 
         guard !isTraining else {
             #if DEBUG
@@ -1060,14 +1258,32 @@ final class AppCoordinator: ObservableObject {
             #if DEBUG
             print("[Training] Training session ended — resuming detection")
             #endif
-            if !audioCaptureService.isCapturing {
-                try? audioCaptureService.startCapture()
-            }
-            if !configureDetection() {
+            // Only resume listening after onboarding/setup is fully done.
+            if !isSetupOrTrainingInProgress {
+                if !audioCaptureService.isCapturing {
+                    try? audioCaptureService.startCapture()
+                }
+                if !configureDetection() {
+                    #if DEBUG
+                    print("[Training] Failed to restore detection after training")
+                    #endif
+                }
+            } else {
                 #if DEBUG
-                print("[Training] Failed to restore detection after training")
+                print("[Startup] Listening deferred — setup/training in progress")
                 #endif
             }
+        }
+
+        #if DEBUG
+        print("[Training] Preparing audio capture for training")
+        #endif
+
+        do {
+            try prepareAudioCaptureForTraining()
+        } catch {
+            failTraining(error.localizedDescription)
+            return
         }
 
         guard let sampleRate = audioCaptureService.inputSampleRate else {
@@ -1076,6 +1292,7 @@ final class AppCoordinator: ObservableObject {
         }
 
         #if DEBUG
+        print("[Training] Audio capture ready for training")
         print("[Training] Training started")
         #endif
 
