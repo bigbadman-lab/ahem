@@ -74,6 +74,13 @@ struct MenuBarView: View {
             .disabled(coordinator.isTrainingSessionActive)
         }
 
+        if let secondaryAction = presentation.secondaryAction {
+            Button(presentation.secondaryActionTitle) {
+                performPrimaryAction(secondaryAction)
+            }
+            .disabled(coordinator.isTrainingSessionActive)
+        }
+
         if presentation.showsListeningToggle {
             Button(presentation.listeningToggleTitle) {
                 coordinator.pauseListening()
@@ -95,6 +102,8 @@ struct MenuBarView: View {
             presentTraining()
         case .resumeListening:
             coordinator.resumeListening()
+        case .retryListening:
+            coordinator.retryListening()
         case .grantMicrophonePermission:
             coordinator.requestMicrophonePermission()
         }

@@ -44,6 +44,7 @@ enum MenuBarPrimaryAction: Equatable {
     case trainPanicCough
     case trainAgain
     case resumeListening
+    case retryListening
     case grantMicrophonePermission
 }
 
@@ -51,6 +52,8 @@ struct MenuBarPresentation: Equatable {
     let statusLine: String
     let primaryAction: MenuBarPrimaryAction?
     let primaryActionTitle: String
+    let secondaryAction: MenuBarPrimaryAction?
+    let secondaryActionTitle: String
     let showsListeningToggle: Bool
     let listeningToggleTitle: String
     let showsResumeToggle: Bool
@@ -76,6 +79,8 @@ extension AppStatus {
                 statusLine: "🟡 Training",
                 primaryAction: nil,
                 primaryActionTitle: "",
+                secondaryAction: nil,
+                secondaryActionTitle: "",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
                 showsResumeToggle: false,
@@ -89,6 +94,8 @@ extension AppStatus {
                 statusLine: "🟢 Ready",
                 primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
                 primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
+                secondaryAction: nil,
+                secondaryActionTitle: "",
                 showsListeningToggle: true,
                 listeningToggleTitle: "Pause Listening",
                 showsResumeToggle: false,
@@ -100,6 +107,8 @@ extension AppStatus {
                 statusLine: "⏸ Paused",
                 primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
                 primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
+                secondaryAction: nil,
+                secondaryActionTitle: "",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
                 showsResumeToggle: true,
@@ -111,6 +120,8 @@ extension AppStatus {
                 statusLine: "⚪ Training Needed",
                 primaryAction: .trainPanicCough,
                 primaryActionTitle: "Train your cough…",
+                secondaryAction: nil,
+                secondaryActionTitle: "",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
                 showsResumeToggle: false,
@@ -122,6 +133,8 @@ extension AppStatus {
                 statusLine: "⚠︎ Microphone Permission Required",
                 primaryAction: .grantMicrophonePermission,
                 primaryActionTitle: "Grant Microphone Permission…",
+                secondaryAction: nil,
+                secondaryActionTitle: "",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
                 showsResumeToggle: false,
@@ -131,8 +144,10 @@ extension AppStatus {
         case .audioError:
             return MenuBarPresentation(
                 statusLine: "⚠︎ Audio Error",
-                primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
-                primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
+                primaryAction: hasFingerprint ? .retryListening : .trainPanicCough,
+                primaryActionTitle: hasFingerprint ? "Retry Listening" : "Train your cough…",
+                secondaryAction: hasFingerprint ? .trainAgain : nil,
+                secondaryActionTitle: hasFingerprint ? "Train Again…" : "",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
                 showsResumeToggle: false,
@@ -144,6 +159,8 @@ extension AppStatus {
                 statusLine: "🟡 Training",
                 primaryAction: nil,
                 primaryActionTitle: "",
+                secondaryAction: nil,
+                secondaryActionTitle: "",
                 showsListeningToggle: false,
                 listeningToggleTitle: "",
                 showsResumeToggle: false,
@@ -155,6 +172,8 @@ extension AppStatus {
                 statusLine: hasFingerprint ? "🟢 Ready" : "⚪ Training Needed",
                 primaryAction: hasFingerprint ? .trainAgain : .trainPanicCough,
                 primaryActionTitle: hasFingerprint ? "Train Again…" : "Train your cough…",
+                secondaryAction: nil,
+                secondaryActionTitle: "",
                 showsListeningToggle: hasFingerprint,
                 listeningToggleTitle: "Pause Listening",
                 showsResumeToggle: false,

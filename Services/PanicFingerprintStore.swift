@@ -25,7 +25,7 @@ final class PanicFingerprintStore {
             defaults.set(data, forKey: storageKey)
         } catch {
             #if DEBUG
-            print("[Training] Failed to save fingerprint: \(error.localizedDescription)")
+            print("[FingerprintStore] Fingerprint save failure: \(error.localizedDescription)")
             #endif
             throw error
         }
@@ -33,6 +33,9 @@ final class PanicFingerprintStore {
 
     func load() -> PanicFingerprint? {
         guard let data = defaults.data(forKey: storageKey), !data.isEmpty else {
+            #if DEBUG
+            print("[FingerprintStore] Fingerprint load failure — no stored data")
+            #endif
             return nil
         }
 
@@ -41,7 +44,7 @@ final class PanicFingerprintStore {
             fingerprint = try JSONDecoder().decode(PanicFingerprint.self, from: data)
         } catch {
             #if DEBUG
-            print("[Detection] Stored fingerprint could not be decoded — retraining required")
+            print("[FingerprintStore] Fingerprint load failure — could not decode stored data")
             #endif
             return nil
         }
@@ -49,8 +52,8 @@ final class PanicFingerprintStore {
         guard fingerprint.version >= PanicFingerprint.currentVersion else {
             #if DEBUG
             print(
-                "[Detection] Legacy fingerprint v\(fingerprint.version) is incompatible — retraining required "
-                    + "(need v\(PanicFingerprint.currentVersion) @ \(String(format: "%.0f", PanicFingerprint.canonicalProcessingSampleRate))Hz)"
+                "[FingerprintStore] Fingerprint load failure — legacy v\(fingerprint.version) "
+                    + "(need v\(PanicFingerprint.currentVersion))"
             )
             #endif
             return nil
@@ -59,9 +62,8 @@ final class PanicFingerprintStore {
         guard fingerprint.isDetectionCompatible else {
             #if DEBUG
             print(
-                "[Detection] Stored fingerprint incompatible "
-                    + "(sampleRate=\(String(format: "%.0f", fingerprint.processingSampleRate)), "
-                    + "expected=\(String(format: "%.0f", PanicFingerprint.canonicalProcessingSampleRate))) — retraining required"
+                "[FingerprintStore] Fingerprint load failure — incompatible processing rate "
+                    + "\(String(format: "%.0f", fingerprint.processingSampleRate))"
             )
             #endif
             return nil
@@ -69,15 +71,15 @@ final class PanicFingerprintStore {
 
         guard fingerprint.hasCompleteSpectralProfile else {
             #if DEBUG
-            print("[Detection] Stored fingerprint is incomplete — retraining required")
+            print("[FingerprintStore] Fingerprint load failure — incomplete spectral profile")
             #endif
             return nil
         }
 
         #if DEBUG
         print(
-            "[Detection] Loaded fingerprint v\(fingerprint.version) "
-                + "processingSampleRate=\(String(format: "%.0f", fingerprint.processingSampleRate)) "
+            "[FingerprintStore] Fingerprint load success — v\(fingerprint.version) "
+                + "@ \(String(format: "%.0f", fingerprint.processingSampleRate))Hz "
                 + "(consistency: \(String(format: "%.2f", fingerprint.trainingConsistency)))"
         )
         #endif
@@ -86,7 +88,15 @@ final class PanicFingerprintStore {
     }
 
     func lastTrainedDate() -> Date? {
-        load()?.createdAt
+        guard let date = load()?.createdAt else {
+            return nil
+        }
+
+        #if DEBUG
+        print("[FingerprintStore] Last trained metadata found")
+        #endif
+
+        return date
     }
 
     func delete() {

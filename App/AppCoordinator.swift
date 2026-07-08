@@ -46,6 +46,7 @@ final class AppCoordinator: ObservableObject {
     private let maxQuietSampleRetriesPerSample = 2
     private let trainingCompleteDisplayDuration: TimeInterval = 2.0
     private let panicDetectedDisplayDuration: TimeInterval = 1.0
+    private let startupAudioSettleWindow: TimeInterval = 0.35
 
     init(appState: AppState) {
         self.appState = appState
@@ -479,11 +480,6 @@ final class AppCoordinator: ObservableObject {
 
     func resumeListening() {
         guard appState.status == .paused else { return }
-
-        #if DEBUG
-        print("[Listening] Resume requested")
-        #endif
-        
         guard !isPausing else {
             #if DEBUG
             print("[Listening] Resume ignored — pause already in progress")
@@ -496,6 +492,10 @@ final class AppCoordinator: ObservableObject {
             #endif
             return
         }
+
+        #if DEBUG
+        print("[Listening] Resume requested")
+        #endif
 
         beginResumeMenuHold()
         isResuming = true
@@ -556,17 +556,53 @@ final class AppCoordinator: ObservableObject {
         #if DEBUG
         print("[Listening] Starting capture then attaching detection")
         #endif
-        await startCaptureAttachDetectionThenVerifyLiveAudio()
+        await restoreListeningWithRecovery(callSite: "ResumeListening", failureMode: .paused)
     }
 
-    private func startCaptureAttachDetectionThenVerifyLiveAudio() async {
+    func retryListening() {
+        guard case .audioError = appState.status else { return }
+        guard !isPausing, !isResuming, !isTraining else { return }
+
+        #if DEBUG
+        print("[AppStartup] Retry Listening requested from menu")
+        #endif
+
+        Task { [weak self] in
+            await self?.restoreListeningWithRecovery(callSite: "Menu.RetryListening", failureMode: .audioError)
+        }
+    }
+
+    private enum ListeningRecoveryFailureMode {
+        case paused
+        case audioError
+    }
+
+    /// Starts capture, attaches detection, and verifies live buffers. Retries once on failure.
+    private func restoreListeningWithRecovery(
+        callSite: String,
+        failureMode: ListeningRecoveryFailureMode
+    ) async {
+        if isSetupOrTrainingInProgress {
+            #if DEBUG
+            print("[AppStartup] Listening deferred — setup/training in progress")
+            #endif
+            return
+        }
+
+        guard panicFingerprintStore.load() != nil else {
+            appState.status = .needsTraining
+            return
+        }
+
+        #if DEBUG
+        print("[AppStartup] Starting audio capture (\(callSite))")
+        #endif
+
         // Attempt 1: start → attach detector → verify first buffer
         do {
             try startCaptureOrThrow()
 
             guard attachDetectionForResume() else {
-                // Capture may have dropped between start success and configureDetection;
-                // treat that as a failed start so the retry path can recover.
                 throw AudioCaptureError.engineStartFailed(
                     underlying: NSError(
                         domain: "AppCoordinator",
@@ -580,26 +616,23 @@ final class AppCoordinator: ObservableObject {
             }
 
             #if DEBUG
-            print("[Listening] Audio capture restarted")
-            print("[AudioCapture] Waiting for first buffer after start")
+            print("[AppStartup] Waiting for first buffer after start")
             #endif
 
             if await audioCaptureService.waitForFirstBufferAfterStart(timeout: 1.0) {
                 #if DEBUG
-                print("[AudioCapture] First buffer received after start")
-                print("[Listening] Audio capture verified live")
-                print("[Listening] Detection resumed")
+                print("[AppStartup] Recovery succeeded — listening (\(callSite))")
                 #endif
                 return
             }
 
             #if DEBUG
-            print("[AudioCapture] No buffer received after start — restarting engine once")
+            print("[AppStartup] No buffer received after start — attempting audio recovery")
             #endif
         } catch {
             #if DEBUG
-            print("[Listening] Capture start failed — retrying once")
-            print("[Listening] Capture start failure: \(error.localizedDescription)")
+            print("[AppStartup] Audio capture failed: \(error.localizedDescription)")
+            print("[AppStartup] Attempting audio recovery")
             #endif
         }
 
@@ -607,38 +640,64 @@ final class AppCoordinator: ObservableObject {
         clearDetectionForResumeFailure()
         audioCaptureService.stopCapture()
 
+        try? await Task.sleep(for: .milliseconds(Int(pauseResumeSettleWindow * 1000)))
+
         do {
             try startCaptureOrThrow()
 
             guard attachDetectionForResume() else {
-                failResumeToPaused(reason: "detection could not be attached after retry")
-                return
+                throw AudioCaptureError.engineStartFailed(
+                    underlying: NSError(
+                        domain: "AppCoordinator",
+                        code: 4,
+                        userInfo: [NSLocalizedDescriptionKey: "Detection could not be attached after recovery retry."]
+                    )
+                )
             }
 
             #if DEBUG
-            print("[AudioCapture] Retry start succeeded")
-            print("[AudioCapture] Waiting for first buffer after retry")
+            print("[AppStartup] Recovery retry — waiting for first buffer")
             #endif
 
             if await audioCaptureService.waitForFirstBufferAfterStart(timeout: 1.0) {
                 #if DEBUG
-                print("[AudioCapture] First buffer received after retry")
-                print("[Listening] Audio capture verified live")
-                print("[Listening] Detection resumed")
+                print("[AppStartup] Recovery succeeded — listening (\(callSite))")
                 #endif
                 return
             }
 
-            #if DEBUG
-            print("[AudioCapture] No buffer received after retry — capture start failed")
-            print("[Listening] Resume failed — no live audio buffers")
-            #endif
-            failResumeToPaused(reason: "no live audio buffers")
+            throw AudioCaptureError.engineStartFailed(
+                underlying: NSError(
+                    domain: "AppCoordinator",
+                    code: 5,
+                    userInfo: [NSLocalizedDescriptionKey: "No live audio buffers after recovery retry."]
+                )
+            )
         } catch {
             #if DEBUG
-            print("[Listening] Resume failed after retry — \(error.localizedDescription)")
+            print("[AppStartup] Recovery failed — audio error: \(error.localizedDescription)")
             #endif
-            failResumeToPaused(reason: error.localizedDescription)
+            applyListeningRecoveryFailure(error, mode: failureMode)
+        }
+    }
+
+    private func applyListeningRecoveryFailure(_ error: Error, mode: ListeningRecoveryFailureMode) {
+        clearDetectionForResumeFailure()
+        audioCaptureService.stopCapture()
+        refreshLastTrainedDate()
+
+        switch mode {
+        case .paused:
+            appState.status = .paused
+            #if DEBUG
+            print("[Listening] ResumeListening failed — \(error.localizedDescription); status restored to paused")
+            #endif
+
+        case .audioError:
+            appState.status = .audioError(error.localizedDescription)
+            #if DEBUG
+            print("[AppStartup] Recovery failed — audio error")
+            #endif
         }
     }
 
@@ -680,78 +739,6 @@ final class AppCoordinator: ObservableObject {
         panicDetector?.stop()
         panicDetector = nil
         audioPipeline.setDetector(nil)
-    }
-
-    private func failResumeToPaused(reason: String) {
-        clearDetectionForResumeFailure()
-        audioCaptureService.stopCapture()
-        appState.status = .paused
-        #if DEBUG
-        print("[Listening] ResumeListening failed — \(reason); status restored to paused")
-        #endif
-    }
-
-    @discardableResult
-    private func restoreListeningAfterCaptureStart(callSite: String) -> Bool {
-        if isSetupOrTrainingInProgress {
-            #if DEBUG
-            print("[Startup] Listening deferred — setup/training in progress")
-            #endif
-            return false
-        }
-
-        do {
-            if !audioCaptureService.isCapturing {
-                try audioCaptureService.startCapture()
-            }
-
-            #if DEBUG
-            print(
-                "[Listening] \(callSite) post-startCapture — "
-                    + "captureActive=\(audioCaptureService.isCapturing)"
-            )
-            #endif
-
-            guard audioCaptureService.isCapturing else {
-                throw AudioCaptureError.engineStartFailed(
-                    underlying: NSError(
-                        domain: "AppCoordinator",
-                        code: 1,
-                        userInfo: [NSLocalizedDescriptionKey: "Audio capture did not become active."]
-                    )
-                )
-            }
-
-            #if DEBUG
-            print("[Listening] Audio capture restarted — captureActive=\(audioCaptureService.isCapturing)")
-            #endif
-
-            guard configureDetection() else {
-                throw AudioCaptureError.engineStartFailed(
-                    underlying: NSError(
-                        domain: "AppCoordinator",
-                        code: 2,
-                        userInfo: [NSLocalizedDescriptionKey: "Detection could not be restored."]
-                    )
-                )
-            }
-
-            #if DEBUG
-            print("[Listening] Detection resumed")
-            #endif
-            return true
-        } catch {
-            audioCaptureService.stopCapture()
-            if callSite == "ResumeListening" {
-                appState.status = .paused
-            } else {
-                appState.status = .audioError(error.localizedDescription)
-            }
-            #if DEBUG
-            print("[Listening] \(callSite) failed — \(error.localizedDescription)")
-            #endif
-            return false
-        }
     }
 
     // TEMP: Release diagnostics — remove when Debug vs Release comparison is complete.
@@ -868,8 +855,8 @@ final class AppCoordinator: ObservableObject {
         evaluateStartupSetupPresentation()
 
         Task {
-            await beginAudioCapture()
             refreshLastTrainedDate()
+            await beginAudioCapture()
         }
     }
 
@@ -1071,48 +1058,46 @@ final class AppCoordinator: ObservableObject {
     /// Observes current microphone permission and starts capture when already granted.
     /// Never prompts — permission dialogs are user-action only.
     private func beginAudioCapture() async {
+        if panicFingerprintStore.hasStoredData {
+            #if DEBUG
+            print("[AppStartup] Stored fingerprint exists")
+            #endif
+        }
+
+        let permission = AudioCaptureService.currentPermissionStatus()
         #if DEBUG
-        print("[Startup] Checking microphone permission (status only — will not request)")
+        print("[AppStartup] Microphone permission status: \(permission)")
         #endif
 
         if isSetupOrTrainingInProgress {
             #if DEBUG
-            print("[Startup] Listening deferred — setup/training in progress")
+            print("[AppStartup] Listening deferred — setup/training in progress")
             #endif
             return
         }
 
-        switch AudioCaptureService.currentPermissionStatus() {
+        switch permission {
         case .notDetermined:
             appState.status = .microphonePermissionNeeded
             #if DEBUG
-            print("[Startup] Microphone permission notDetermined — detection inactive until user grants")
+            print("[AppStartup] Microphone permission notDetermined — detection inactive until user grants")
             #endif
 
         case .granted:
-            startCapture()
+            guard panicFingerprintStore.load() != nil else {
+                appState.status = .needsTraining
+                return
+            }
+
+            try? await Task.sleep(for: .milliseconds(Int(startupAudioSettleWindow * 1000)))
+            await restoreListeningWithRecovery(callSite: "AppStartup", failureMode: .audioError)
 
         case .denied:
             appState.status = .microphonePermissionDenied
             #if DEBUG
-            print("[Startup] Startup failed: microphone permission denied")
+            print("[AppStartup] Startup failed: microphone permission denied")
             #endif
         }
-    }
-
-    private func startCapture() {
-        if isSetupOrTrainingInProgress {
-            #if DEBUG
-            print("[Startup] Listening deferred — setup/training in progress")
-            #endif
-            return
-        }
-
-        #if DEBUG
-        print("[Startup] Starting audio capture")
-        #endif
-
-        _ = restoreListeningAfterCaptureStart(callSite: "Startup")
     }
 
     @discardableResult
@@ -1161,13 +1146,14 @@ final class AppCoordinator: ObservableObject {
             return false
         }
 
-        guard let sampleRate = audioCaptureService.inputSampleRate else {
-            appState.status = .audioError("Microphone input is unavailable.")
+        guard audioCaptureService.inputSampleRate != nil else {
             #if DEBUG
             print("[Detection] configureDetection aborted — microphone input unavailable")
             #endif
             return false
         }
+
+        let sampleRate = AudioCaptureService.targetProcessingSampleRate
 
         let detector = PanicDetector(fingerprint: fingerprint)
         detector.onMatch = { [weak self] result in
