@@ -80,7 +80,8 @@ final class PanicDetector {
 
         #if DEBUG
         print(
-            "[Detection] Active (version: \(fingerprint.version), threshold: \(config.threshold), "
+            "[Detection] Detection resumed "
+                + "(version: \(fingerprint.version), threshold: \(config.threshold), "
                 + "cooldown: \(config.cooldownDuration)s, smoothing: \(config.confidenceHistorySize))"
         )
         #endif
@@ -107,6 +108,10 @@ final class PanicDetector {
         stateLock.unlock()
 
         windowToReset?.reset()
+
+        #if DEBUG
+        print("[Detection] Detection paused")
+        #endif
     }
 
     func process(buffer: AVAudioPCMBuffer) {
@@ -175,6 +180,9 @@ final class PanicDetector {
             smoothed: smoothedConfidence,
             threshold: config.threshold,
             noiseFloor: currentNoiseFloor,
+            passesPeakSanity: passesPeakSanity,
+            passesNoiseFloor: passesNoiseFloor,
+            qualifies: qualifies,
             fired: fired
         )
 
@@ -204,7 +212,7 @@ final class PanicDetector {
 
         #if DEBUG
         print(
-            "[Detection] Panic detection "
+            "[Detection] Detection event emitted "
                 + formatDetectionSummary(
                     breakdown: breakdown,
                     smoothed: smoothedConfidence,
@@ -243,6 +251,9 @@ final class PanicDetector {
         smoothed: Double,
         threshold: Double,
         noiseFloor: Double,
+        passesPeakSanity: Bool,
+        passesNoiseFloor: Bool,
+        qualifies: Bool,
         fired: Bool
     ) {
         #if DEBUG
@@ -257,13 +268,16 @@ final class PanicDetector {
         stateLock.unlock()
 
         print(
-            "[Detection] heuristic: \(formatConfidence(breakdown.heuristic)), "
-                + "spectral: \(formatConfidence(breakdown.spectral)), "
-                + "final: \(formatConfidence(breakdown.final)), "
+            "[Detection] instantaneous: \(formatConfidence(breakdown.final)), "
                 + "smoothed: \(formatConfidence(smoothed)), "
                 + "threshold: \(formatConfidence(threshold)), "
-                + "noiseFloor: \(String(format: "%.4f", noiseFloor)), "
-                + "fired: \(fired)"
+                + "heuristic: \(formatConfidence(breakdown.heuristic)), "
+                + "spectral: \(formatConfidence(breakdown.spectral)), "
+                + "peakSanity: \(passesPeakSanity), "
+                + "noiseFloorPass: \(passesNoiseFloor), "
+                + "qualifies: \(qualifies), "
+                + "fired: \(fired), "
+                + "noiseFloorRMS: \(String(format: "%.4f", noiseFloor))"
         )
 
         if breakdown.spectralRaw != breakdown.spectral {

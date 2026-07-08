@@ -34,6 +34,7 @@
 		A1B2C3D4010000000000001A /* AhemAppIconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000001A /* AhemAppIconView.swift */; };
 		A1B2C3D4010000000000001B /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000001B /* OnboardingView.swift */; };
 		A1B2C3D4010000000000001C /* OnboardingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000001C /* OnboardingStore.swift */; };
+		A1B2C3D4010000000000001D /* DiagnosticsReportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000001E /* DiagnosticsReportService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -65,6 +66,7 @@
 		A1B2C3D4020000000000001B /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		A1B2C3D4020000000000001C /* OnboardingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingStore.swift; sourceTree = "<group>"; };
 		A1B2C3D4020000000000001D /* Ahem.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Ahem.entitlements; sourceTree = "<group>"; };
+		A1B2C3D4020000000000001E /* DiagnosticsReportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsReportService.swift; sourceTree = "<group>"; };
 		A1B2C3D40300000000000001 /* Ahem.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ahem.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -125,6 +127,7 @@
 				A1B2C3D40200000000000014 /* LaunchAtLoginService.swift */,
 				A1B2C3D40200000000000015 /* TrainingConfirmationSound.swift */,
 				A1B2C3D4020000000000001C /* OnboardingStore.swift */,
+				A1B2C3D4020000000000001E /* DiagnosticsReportService.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -305,6 +308,7 @@
 				A1B2C3D4010000000000001A /* AhemAppIconView.swift in Sources */,
 				A1B2C3D4010000000000001B /* OnboardingView.swift in Sources */,
 				A1B2C3D4010000000000001C /* OnboardingStore.swift in Sources */,
+				A1B2C3D4010000000000001D /* DiagnosticsReportService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

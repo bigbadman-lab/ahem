@@ -97,6 +97,17 @@ struct MenuBarView: View {
         Button("About Ahem") {
             presentAbout()
         }
+
+        // TEMP: Release diagnostics — remove when Debug vs Release comparison is complete.
+        Button("Copy Diagnostics") {
+            coordinator.copyDiagnosticsToClipboard()
+        }
+
+        if let confirmation = appState.diagnosticsCopyConfirmation {
+            Text(confirmation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private func performPrimaryAction(_ action: MenuBarPrimaryAction) {

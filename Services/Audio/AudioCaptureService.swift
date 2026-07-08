@@ -35,17 +35,18 @@ final class AudioCaptureService {
 
     // Lazy: do not create AVAudioEngine / touch input hardware until permission is granted.
     private var engine: AVAudioEngine?
+    private var captureSessionActive = false
     private let logInterval: TimeInterval = 3
     private var isTapInstalled = false
     private var bufferCount = 0
     private var lastLogDate: Date?
 
     var isCapturing: Bool {
-        isTapInstalled && (engine?.isRunning ?? false)
+        captureSessionActive && isTapInstalled && engine != nil
     }
 
     var inputSampleRate: Double? {
-        guard isTapInstalled, let engine else { return nil }
+        guard isCapturing, let engine else { return nil }
         let sampleRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
         guard sampleRate.isFinite, sampleRate > 0 else { return nil }
         return sampleRate
@@ -303,7 +304,7 @@ final class AudioCaptureService {
     #endif
 
     func startCapture() throws {
-        if isTapInstalled && (engine?.isRunning ?? false) {
+        if isCapturing {
             #if DEBUG
             print("[AudioCapture] Audio engine already running — start ignored")
             #endif
@@ -314,6 +315,8 @@ final class AudioCaptureService {
             removeTapIfNeeded()
         }
 
+        captureSessionActive = false
+
         #if DEBUG
         print("[AudioCapture] Creating AVAudioEngine (permission granted path)")
         #endif
@@ -323,7 +326,16 @@ final class AudioCaptureService {
         print("[AudioCapture] Starting audio engine")
         #endif
 
-        guard let engine else { return }
+        guard let engine else {
+            captureSessionActive = false
+            throw AudioCaptureError.engineStartFailed(
+                underlying: NSError(
+                    domain: "AudioCaptureService",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "AVAudioEngine could not be created."]
+                )
+            )
+        }
         let inputNode = engine.inputNode
         #if DEBUG
         print("[AudioCapture] Accessing inputNode.outputFormat")
@@ -332,6 +344,8 @@ final class AudioCaptureService {
         guard format.sampleRate.isFinite,
               format.sampleRate > 0,
               format.channelCount > 0 else {
+            self.engine = nil
+            captureSessionActive = false
             #if DEBUG
             print("[AudioCapture] Invalid input format — sampleRate: \(format.sampleRate), channels: \(format.channelCount)")
             #endif
@@ -351,19 +365,42 @@ final class AudioCaptureService {
             try engine.start()
         } catch {
             removeTapIfNeeded()
+            self.engine = nil
+            captureSessionActive = false
             #if DEBUG
             print("[AudioCapture] Failed to start audio engine: \(error.localizedDescription)")
             #endif
             throw AudioCaptureError.engineStartFailed(underlying: error)
         }
 
+        guard engine.isRunning else {
+            removeTapIfNeeded()
+            self.engine = nil
+            captureSessionActive = false
+            #if DEBUG
+            print("[AudioCapture] Engine start returned without isRunning=true — treating as failure")
+            #endif
+            throw AudioCaptureError.engineStartFailed(
+                underlying: NSError(
+                    domain: "AudioCaptureService",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "AVAudioEngine did not enter running state."]
+                )
+            )
+        }
+
+        captureSessionActive = true
+
         #if DEBUG
-        print("[AudioCapture] Audio engine started")
+        print(
+            "[AudioCapture] Audio engine started — "
+                + "captureActive=\(isCapturing), isRunning=\(engine.isRunning)"
+        )
         #endif
     }
 
     func stopCapture() {
-        guard isTapInstalled || (engine?.isRunning ?? false) else {
+        guard captureSessionActive || isTapInstalled || engine != nil else {
             #if DEBUG
             print("[AudioCapture] Audio engine already stopped — stop ignored")
             #endif
@@ -374,27 +411,33 @@ final class AudioCaptureService {
         print("[AudioCapture] Stopping audio engine")
         #endif
 
+        captureSessionActive = false
         removeTapIfNeeded()
-        if engine?.isRunning == true {
-            engine?.stop()
+        if let engine, engine.isRunning {
+            engine.stop()
         }
         engine = nil
         bufferCount = 0
         lastLogDate = nil
 
         #if DEBUG
-        print("[AudioCapture] Audio engine stopped")
+        print("[AudioCapture] Audio engine stopped — captureActive=\(isCapturing)")
         #endif
     }
 
     private func removeTapIfNeeded() {
         guard isTapInstalled else { return }
-        guard let engine else { return }
 
-        #if DEBUG
-        print("[AudioCapture] Removing input tap (onBus=0)")
-        #endif
-        engine.inputNode.removeTap(onBus: 0)
+        if let engine {
+            #if DEBUG
+            print("[AudioCapture] Removing input tap (onBus=0)")
+            #endif
+            engine.inputNode.removeTap(onBus: 0)
+        } else {
+            #if DEBUG
+            print("[AudioCapture] Clearing stale tap flag — engine already nil")
+            #endif
+        }
         isTapInstalled = false
     }
 
@@ -417,7 +460,10 @@ final class AudioCaptureService {
         lastLogDate = now
 
         #if DEBUG
-        print("[AudioCapture] \(bufferCount) buffers received (latest frameLength: \(frameLength))")
+        print(
+            "[AudioCapture] \(bufferCount) buffers received "
+                + "(latest frameLength: \(frameLength), captureActive: \(isCapturing))"
+        )
         #endif
     }
 }

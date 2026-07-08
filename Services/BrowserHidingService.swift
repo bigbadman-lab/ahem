@@ -27,21 +27,52 @@ struct BrowserHidingService {
     private static let postHideVerificationAttempts = 5
 
     func hideActiveBrowserIfSupported() -> BrowserHidingResult {
+        #if DEBUG
+        print("[BrowserHiding] Hide requested — checking frontmost application")
+        #endif
+
         guard let frontmostApplication = NSWorkspace.shared.frontmostApplication else {
+            #if DEBUG
+            print("[BrowserHiding] No frontmost application")
+            #endif
             return .noFrontmostApplication
         }
 
         let localizedName = frontmostApplication.localizedName ?? "Unknown"
         let bundleIdentifier = frontmostApplication.bundleIdentifier ?? "unknown"
 
+        #if DEBUG
+        print(
+            "[BrowserHiding] Frontmost app: \(localizedName) "
+                + "(bundleID: \(bundleIdentifier))"
+        )
+        #endif
+
         guard Self.supportedBrowserBundleIDs.contains(bundleIdentifier) else {
+            #if DEBUG
+            print(
+                "[BrowserHiding] Not a supported browser — "
+                    + "supported=\(Self.supportedBrowserBundleIDs.sorted().joined(separator: ", "))"
+            )
+            #endif
             return .notBrowser(bundleIdentifier: bundleIdentifier, localizedName: localizedName)
         }
+
+        #if DEBUG
+        print("[BrowserHiding] Supported browser confirmed — attempting hide()")
+        #endif
 
         let processIdentifier = frontmostApplication.processIdentifier
         let hideReturnedTrue = frontmostApplication.hide()
 
+        #if DEBUG
+        print("[BrowserHiding] hide() returned \(hideReturnedTrue)")
+        #endif
+
         if hideReturnedTrue {
+            #if DEBUG
+            print("[BrowserHiding] Hide succeeded via hide() return value")
+            #endif
             return .hidden(
                 bundleIdentifier: bundleIdentifier,
                 localizedName: localizedName,
@@ -50,6 +81,9 @@ struct BrowserHidingService {
         }
 
         if Self.isApplicationHidden(processIdentifier: processIdentifier) {
+            #if DEBUG
+            print("[BrowserHiding] Hide succeeded — verified via isHidden")
+            #endif
             return .hidden(
                 bundleIdentifier: bundleIdentifier,
                 localizedName: localizedName,
@@ -57,9 +91,15 @@ struct BrowserHidingService {
             )
         }
 
-        for _ in 0..<Self.postHideVerificationAttempts {
+        for attempt in 0..<Self.postHideVerificationAttempts {
             Thread.sleep(forTimeInterval: Self.postHideVerificationInterval)
             if Self.isApplicationHidden(processIdentifier: processIdentifier) {
+                #if DEBUG
+                print(
+                    "[BrowserHiding] Hide succeeded — verified via isHidden "
+                        + "after \(attempt + 1) polling attempt(s)"
+                )
+                #endif
                 return .hidden(
                     bundleIdentifier: bundleIdentifier,
                     localizedName: localizedName,
@@ -68,6 +108,9 @@ struct BrowserHidingService {
             }
         }
 
+        #if DEBUG
+        print("[BrowserHiding] Hide failed — browser still visible after verification")
+        #endif
         return .failed(bundleIdentifier: bundleIdentifier, localizedName: localizedName)
     }
 

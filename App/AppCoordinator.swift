@@ -100,7 +100,10 @@ final class AppCoordinator: ObservableObject {
         onboardingStore.markCompleted()
         appState.onboardingPhase = .idle
         dismissTrainingUI()
-        configureDetection()
+        if !audioCaptureService.isCapturing {
+            try? audioCaptureService.startCapture()
+        }
+        _ = configureDetection()
 
         #if DEBUG
         print("[Onboarding] Onboarding completed")
@@ -120,7 +123,10 @@ final class AppCoordinator: ObservableObject {
 
         case .completion:
             dismissTrainingUI()
-            configureDetection()
+            if !audioCaptureService.isCapturing {
+                try? audioCaptureService.startCapture()
+            }
+            _ = configureDetection()
 
         case .welcome, .permissionDenied:
             break
@@ -210,7 +216,10 @@ final class AppCoordinator: ObservableObject {
         trainingTask?.cancel()
         dismissTrainingUI()
         if !isTraining {
-            configureDetection()
+            if !audioCaptureService.isCapturing {
+                try? audioCaptureService.startCapture()
+            }
+            _ = configureDetection()
         }
     }
 
@@ -237,17 +246,181 @@ final class AppCoordinator: ObservableObject {
     func pauseListening() {
         guard appState.status == .listening || appState.status == .panicDetected else { return }
 
+        #if DEBUG
+        print("[Listening] Pause requested")
+        #endif
+
         detectionResetTask?.cancel()
         detectionResetTask = nil
         panicDetector?.stop()
         panicDetector = nil
         audioPipeline.setDetector(nil)
+        audioCaptureService.stopCapture()
         appState.status = .paused
+
+        #if DEBUG
+        print("[Listening] Detection paused")
+        print("[Listening] Audio capture stopped")
+        #endif
     }
 
     func resumeListening() {
         guard appState.status == .paused else { return }
-        configureDetection()
+
+        #if DEBUG
+        print("[Listening] Resume requested")
+        #endif
+
+        guard !isTraining else {
+            #if DEBUG
+            print("[Listening] Resume skipped — training still active")
+            #endif
+            return
+        }
+
+        switch AudioCaptureService.currentPermissionStatus() {
+        case .granted:
+            break
+        case .notDetermined:
+            appState.status = .microphonePermissionNeeded
+            return
+        case .denied:
+            appState.status = .microphonePermissionDenied
+            return
+        }
+
+        guard panicFingerprintStore.load() != nil else {
+            appState.status = .needsTraining
+            return
+        }
+
+        restoreListeningAfterCaptureStart(callSite: "ResumeListening")
+    }
+
+    @discardableResult
+    private func restoreListeningAfterCaptureStart(callSite: String) -> Bool {
+        do {
+            if !audioCaptureService.isCapturing {
+                try audioCaptureService.startCapture()
+            }
+
+            #if DEBUG
+            print(
+                "[Listening] \(callSite) post-startCapture — "
+                    + "captureActive=\(audioCaptureService.isCapturing)"
+            )
+            #endif
+
+            guard audioCaptureService.isCapturing else {
+                throw AudioCaptureError.engineStartFailed(
+                    underlying: NSError(
+                        domain: "AppCoordinator",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Audio capture did not become active."]
+                    )
+                )
+            }
+
+            #if DEBUG
+            print("[Listening] Audio capture restarted — captureActive=\(audioCaptureService.isCapturing)")
+            #endif
+
+            guard configureDetection() else {
+                throw AudioCaptureError.engineStartFailed(
+                    underlying: NSError(
+                        domain: "AppCoordinator",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Detection could not be restored."]
+                    )
+                )
+            }
+
+            #if DEBUG
+            print("[Listening] Detection resumed")
+            #endif
+            return true
+        } catch {
+            audioCaptureService.stopCapture()
+            if callSite == "ResumeListening" {
+                appState.status = .paused
+            } else {
+                appState.status = .audioError(error.localizedDescription)
+            }
+            #if DEBUG
+            print("[Listening] \(callSite) failed — \(error.localizedDescription)")
+            #endif
+            return false
+        }
+    }
+
+    // TEMP: Release diagnostics — remove when Debug vs Release comparison is complete.
+    func copyDiagnosticsToClipboard() {
+        let report = DiagnosticsReportService.makeReport(snapshot: makeDiagnosticsSnapshot())
+        DiagnosticsReportService.copyToClipboard(report)
+
+        appState.diagnosticsCopyConfirmation = "Diagnostics copied to clipboard."
+
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self else { return }
+            if self.appState.diagnosticsCopyConfirmation == "Diagnostics copied to clipboard." {
+                self.appState.diagnosticsCopyConfirmation = nil
+            }
+        }
+
+        #if DEBUG
+        print("[Diagnostics] Copied diagnostics report to clipboard")
+        #endif
+    }
+
+    private func makeDiagnosticsSnapshot() -> DiagnosticsSnapshot {
+        let bundle = Bundle.main
+        let info = bundle.infoDictionary
+        let bundlePath = bundle.bundlePath
+        let entitlements = DiagnosticsReportService.currentProcessEntitlements()
+        let fingerprint = panicFingerprintStore.load()
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let frontmostBundleID = frontmost?.bundleIdentifier ?? "none"
+        let frontmostName = frontmost?.localizedName ?? "none"
+
+        return DiagnosticsSnapshot(
+            appVersion: info?["CFBundleShortVersionString"] as? String ?? "unknown",
+            buildNumber: info?["CFBundleVersion"] as? String ?? "unknown",
+            bundleIdentifier: bundle.bundleIdentifier ?? "unknown",
+            executablePath: bundle.executablePath ?? "unknown",
+            bundlePath: bundlePath,
+            installLocation: DiagnosticsReportService.installLocationLabel(bundlePath: bundlePath),
+            buildConfiguration: DiagnosticsReportService.buildConfigurationLabel(),
+            entitlementAudioInput: DiagnosticsReportService.entitlementValue(
+                entitlements,
+                key: "com.apple.security.device.audio-input"
+            ),
+            entitlementAppSandbox: DiagnosticsReportService.entitlementValue(
+                entitlements,
+                key: "com.apple.security.app-sandbox"
+            ),
+            entitlementGetTaskAllow: DiagnosticsReportService.entitlementValue(
+                entitlements,
+                key: "com.apple.security.get-task-allow"
+            ),
+            microphonePermission: DiagnosticsReportService.microphonePermissionLabel(),
+            microphoneUsageDescriptionPresent: info?["NSMicrophoneUsageDescription"] != nil,
+            microphoneUsageDescription: info?["NSMicrophoneUsageDescription"] as? String,
+            fingerprintStored: panicFingerprintStore.hasStoredData,
+            fingerprintVersion: fingerprint.map { String($0.version) } ?? "n/a",
+            fingerprintConsistency: fingerprint.map {
+                String(format: "%.2f", $0.trainingConsistency)
+            } ?? "n/a",
+            appStatus: DiagnosticsReportService.appStatusLabel(appState.status),
+            audioCaptureActive: audioCaptureService.isCapturing,
+            panicDetectorAttached: panicDetector != nil,
+            detectionPaused: appState.status == .paused,
+            frontmostAppName: frontmostName,
+            frontmostAppBundleID: frontmostBundleID,
+            frontmostIsSupportedBrowser: BrowserHidingService.supportedBrowserBundleIDs
+                .contains(frontmostBundleID),
+            supportedBrowserBundleIDs: BrowserHidingService.supportedBrowserBundleIDs.sorted()
+        )
     }
 
     func requestMicrophonePermission() {
@@ -478,62 +651,55 @@ final class AppCoordinator: ObservableObject {
         print("[Startup] Starting audio capture")
         #endif
 
-        do {
-            try audioCaptureService.startCapture()
-            configureDetection()
-            #if DEBUG
-            print("[Startup] Startup complete")
-            #endif
-        } catch {
-            appState.status = .audioError(error.localizedDescription)
-            #if DEBUG
-            print("[Startup] Startup failed: \(error.localizedDescription)")
-            #endif
-        }
+        _ = restoreListeningAfterCaptureStart(callSite: "Startup")
     }
 
-    private func configureDetection() {
+    @discardableResult
+    private func configureDetection() -> Bool {
+        #if DEBUG
+        print(
+            "[Detection] configureDetection called — "
+                + "isTraining=\(isTraining), status=\(appState.status), "
+                + "captureActive=\(audioCaptureService.isCapturing)"
+        )
+        #endif
+
         guard !isTraining else {
             #if DEBUG
-            print("[Detection] Resume skipped — training still active")
+            print("[Detection] configureDetection skipped — training still active")
             #endif
-            return
+            return false
         }
 
         panicDetector?.stop()
         panicDetector = nil
         audioPipeline.setDetector(nil)
 
-        #if DEBUG
-        print("[Startup] Loading stored fingerprint")
-        #endif
-
         guard let fingerprint = panicFingerprintStore.load() else {
             appState.status = .needsTraining
             appState.lastTrainedAt = nil
             #if DEBUG
-            print("[Startup] No stored fingerprint — detection inactive")
+            print("[Detection] configureDetection aborted — no stored fingerprint")
             #endif
-            return
+            return false
         }
 
         appState.lastTrainedAt = fingerprint.createdAt
 
-        #if DEBUG
-        print("[Startup] Stored fingerprint loaded")
-        #endif
+        guard audioCaptureService.isCapturing else {
+            #if DEBUG
+            print("[Detection] configureDetection aborted — audio capture is not active")
+            #endif
+            return false
+        }
 
         guard let sampleRate = audioCaptureService.inputSampleRate else {
             appState.status = .audioError("Microphone input is unavailable.")
             #if DEBUG
-            print("[Startup] Startup failed: microphone input unavailable")
+            print("[Detection] configureDetection aborted — microphone input unavailable")
             #endif
-            return
+            return false
         }
-
-        #if DEBUG
-        print("[Startup] Starting detection")
-        #endif
 
         let detector = PanicDetector(fingerprint: fingerprint)
         detector.onMatch = { [weak self] result in
@@ -547,15 +713,36 @@ final class AppCoordinator: ObservableObject {
         appState.status = .listening
 
         #if DEBUG
-        print("[Startup] Detection started")
+        print(
+            "[Detection] configureDetection complete — detector attached, "
+                + "sampleRate=\(String(format: "%.0f", sampleRate)), "
+                + "captureActive=\(audioCaptureService.isCapturing), status=listening"
+        )
         #endif
+        return true
     }
 
     private func handlePanicDetected(confidence: Double) {
-        guard appState.status == .listening || appState.status == .panicDetected else { return }
+        #if DEBUG
+        let hideAllowed = appState.status == .listening || appState.status == .panicDetected
+        print(
+            "[Panic] Detection callback received — "
+                + "confidence: \(String(format: "%.2f", confidence)), "
+                + "status: \(appState.status), "
+                + "isTraining: \(isTraining), "
+                + "hideAllowed: \(hideAllowed)"
+        )
+        #endif
+
+        guard appState.status == .listening || appState.status == .panicDetected else {
+            #if DEBUG
+            print("[Panic] Hide suppressed — app status does not allow browser hiding")
+            #endif
+            return
+        }
 
         #if DEBUG
-        print("[Panic] Detected with confidence: \(String(format: "%.2f", confidence))")
+        print("[Panic] Proceeding with browser hide")
         #endif
 
         let hideResult = browserHidingService.hideActiveBrowserIfSupported()
@@ -600,10 +787,17 @@ final class AppCoordinator: ObservableObject {
             audioPipeline.setSampleCollector(nil)
             isTraining = false
             trainingTask = nil
-            configureDetection()
             #if DEBUG
-            print("[Training] Detection resumed")
+            print("[Training] Training session ended — resuming detection")
             #endif
+            if !audioCaptureService.isCapturing {
+                try? audioCaptureService.startCapture()
+            }
+            if !configureDetection() {
+                #if DEBUG
+                print("[Training] Failed to restore detection after training")
+                #endif
+            }
         }
 
         guard let sampleRate = audioCaptureService.inputSampleRate else {
