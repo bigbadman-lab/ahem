@@ -23,7 +23,15 @@ final class PanicFingerprintStore {
         do {
             let data = try JSONEncoder().encode(fingerprint)
             defaults.set(data, forKey: storageKey)
+            DiagnosticsLog.shared.log(
+                category: "Fingerprint",
+                "store save succeeded — v\(fingerprint.version)"
+            )
         } catch {
+            DiagnosticsLog.shared.log(
+                category: "Fingerprint",
+                "store save failed — \(error.localizedDescription)"
+            )
             #if DEBUG
             print("[FingerprintStore] Fingerprint save failure: \(error.localizedDescription)")
             #endif
@@ -33,6 +41,7 @@ final class PanicFingerprintStore {
 
     func load() -> PanicFingerprint? {
         guard let data = defaults.data(forKey: storageKey), !data.isEmpty else {
+            DiagnosticsLog.shared.log(category: "Fingerprint", "store load — no stored data")
             #if DEBUG
             print("[FingerprintStore] Fingerprint load failure — no stored data")
             #endif
@@ -43,6 +52,7 @@ final class PanicFingerprintStore {
         do {
             fingerprint = try JSONDecoder().decode(PanicFingerprint.self, from: data)
         } catch {
+            DiagnosticsLog.shared.log(category: "Fingerprint", "store load failed — could not decode")
             #if DEBUG
             print("[FingerprintStore] Fingerprint load failure — could not decode stored data")
             #endif
@@ -50,31 +60,34 @@ final class PanicFingerprintStore {
         }
 
         guard fingerprint.version >= PanicFingerprint.currentVersion else {
-            #if DEBUG
-            print(
-                "[FingerprintStore] Fingerprint load failure — legacy v\(fingerprint.version) "
-                    + "(need v\(PanicFingerprint.currentVersion))"
+            DiagnosticsLog.shared.log(
+                category: "Fingerprint",
+                "store load failed — legacy v\(fingerprint.version)"
             )
-            #endif
             return nil
         }
 
         guard fingerprint.isDetectionCompatible else {
-            #if DEBUG
-            print(
-                "[FingerprintStore] Fingerprint load failure — incompatible processing rate "
+            DiagnosticsLog.shared.log(
+                category: "Fingerprint",
+                "store load failed — incompatible processing rate "
                     + "\(String(format: "%.0f", fingerprint.processingSampleRate))"
             )
-            #endif
             return nil
         }
 
         guard fingerprint.hasCompleteSpectralProfile else {
+            DiagnosticsLog.shared.log(category: "Fingerprint", "store load failed — incomplete spectral profile")
             #if DEBUG
             print("[FingerprintStore] Fingerprint load failure — incomplete spectral profile")
             #endif
             return nil
         }
+
+        DiagnosticsLog.shared.log(
+            category: "Fingerprint",
+            "store load succeeded — v\(fingerprint.version) @ \(String(format: "%.0f", fingerprint.processingSampleRate))Hz"
+        )
 
         #if DEBUG
         print(

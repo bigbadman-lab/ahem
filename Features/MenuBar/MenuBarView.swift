@@ -37,6 +37,16 @@ struct MenuBarView: View {
                 presentAbout()
             }
 
+            Button("Copy Diagnostics") {
+                coordinator.copyDiagnosticsToClipboard()
+            }
+
+            if let confirmation = appState.diagnosticsCopyConfirmation {
+                Text(confirmation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Divider()
 
             Button("Quit") {

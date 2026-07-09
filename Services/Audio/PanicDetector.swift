@@ -78,6 +78,11 @@ final class PanicDetector {
         noiseFloorRMS = PanicFingerprintService.minimumRMS
         noiseFloorHistory.removeAll(keepingCapacity: true)
 
+        DiagnosticsLog.shared.log(
+            category: "Detection",
+            "started — v\(fingerprint.version), threshold=\(config.threshold), sampleRate=\(String(format: "%.0f", sampleRate))"
+        )
+
         #if DEBUG
         print(
             "[Detection] Detection resumed "
@@ -111,6 +116,8 @@ final class PanicDetector {
         stateLock.unlock()
 
         windowToReset?.reset()
+
+        DiagnosticsLog.shared.log(category: "Detection", "stopped")
 
         #if DEBUG
         print("[Detection] Detection paused")
@@ -178,6 +185,15 @@ final class PanicDetector {
 
         let fired = qualifies && !inCooldown
 
+        DiagnosticsLog.shared.recordDetectionDecision(
+            instantaneous: breakdown.final,
+            smoothed: smoothedConfidence,
+            threshold: config.threshold,
+            fired: fired && qualifies,
+            inCooldown: inCooldown,
+            qualifies: qualifies
+        )
+
         logAnalysisIfNeeded(
             breakdown: breakdown,
             smoothed: smoothedConfidence,
@@ -191,6 +207,16 @@ final class PanicDetector {
 
         if inCooldown {
             if qualifies {
+                DiagnosticsLog.shared.log(
+                    category: "Detection",
+                    "cooldown active — suppressing match "
+                        + formatDetectionSummary(
+                            breakdown: breakdown,
+                            smoothed: smoothedConfidence,
+                            threshold: config.threshold,
+                            fired: false
+                        )
+                )
                 #if DEBUG
                 print(
                     "[Detection] Cooldown active — suppressing match "
@@ -224,6 +250,17 @@ final class PanicDetector {
                 )
         )
         #endif
+
+        DiagnosticsLog.shared.log(
+            category: "Detection",
+            "event emitted "
+                + formatDetectionSummary(
+                    breakdown: breakdown,
+                    smoothed: smoothedConfidence,
+                    threshold: config.threshold,
+                    fired: true
+                )
+        )
 
         let result = PanicDetectionResult(
             confidence: breakdown.final,
