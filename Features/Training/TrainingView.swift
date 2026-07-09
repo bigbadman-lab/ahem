@@ -148,16 +148,26 @@ private struct TrainingListeningView: View {
     let total: Int
     let inputLevel: Double
 
-    @State private var isPulsing = false
+    @State private var displayLevel: Double = 0
+    @State private var speakBurst: Double = 0
+    @State private var idleBreathing = false
 
-    private var displayLevel: Double {
-        min(1, max(0, inputLevel))
+    private let speakingThreshold = 0.10
+
+    private var outerRingScale: CGFloat {
+        let base: CGFloat = idleBreathing ? 1.03 : 0.98
+        let reactive = 1.0 + CGFloat(displayLevel) * 0.62
+        let burst = 1.0 + CGFloat(speakBurst) * 0.18
+        return base * reactive * burst
     }
 
-    private var indicatorScale: CGFloat {
-        let idlePulse: CGFloat = isPulsing ? 1.04 : 0.96
-        let reactiveScale = 1.0 + CGFloat(displayLevel) * 0.28
-        return idlePulse * reactiveScale
+    private var midRingScale: CGFloat {
+        let base: CGFloat = idleBreathing ? 1.02 : 0.99
+        return base * (1.0 + CGFloat(displayLevel) * 0.42)
+    }
+
+    private var coreScale: CGFloat {
+        1.0 + CGFloat(displayLevel) * 0.75 + CGFloat(speakBurst) * 0.35
     }
 
     var body: some View {
@@ -181,29 +191,85 @@ private struct TrainingListeningView: View {
 
             ZStack {
                 Circle()
-                    .stroke(.secondary.opacity(0.08 + displayLevel * 0.2), lineWidth: 1)
-                    .frame(width: 80, height: 80)
-                    .scaleEffect(1.0 + CGFloat(displayLevel) * 0.45)
-                    .animation(.easeOut(duration: 0.12), value: displayLevel)
+                    .stroke(
+                        Color.accentColor.opacity(0.12 + displayLevel * 0.28),
+                        lineWidth: 1.5
+                    )
+                    .frame(width: 132, height: 132)
+                    .scaleEffect(outerRingScale)
+                    .blur(radius: CGFloat(displayLevel) * 3.5)
 
                 Circle()
-                    .strokeBorder(
-                        .secondary.opacity(0.25 + displayLevel * 0.45),
-                        lineWidth: 2 + displayLevel * 2
+                    .stroke(
+                        Color.accentColor.opacity(0.22 + displayLevel * 0.45),
+                        lineWidth: 2.5
                     )
-                    .background(
-                        Circle()
-                            .fill(.secondary.opacity(0.05 + displayLevel * 0.2))
+                    .frame(width: 100, height: 100)
+                    .scaleEffect(midRingScale)
+
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                Color.accentColor.opacity(0.18 + displayLevel * 0.55),
+                                Color.accentColor.opacity(0.04 + displayLevel * 0.12),
+                                .clear,
+                            ],
+                            center: .center,
+                            startRadius: 4,
+                            endRadius: 52
+                        )
                     )
-                    .frame(width: 56, height: 56)
-                    .scaleEffect(indicatorScale)
-                    .animation(.easeOut(duration: 0.1), value: displayLevel)
-                    .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: isPulsing)
+                    .frame(width: 88, height: 88)
+                    .scaleEffect(1.0 + CGFloat(displayLevel) * 0.22)
+
+                Circle()
+                    .fill(Color.accentColor.opacity(0.35 + displayLevel * 0.5))
+                    .frame(width: 28, height: 28)
+                    .shadow(
+                        color: Color.accentColor.opacity(0.25 + displayLevel * 0.45),
+                        radius: 8 + displayLevel * 18
+                    )
+                    .scaleEffect(coreScale)
             }
-            .onAppear { isPulsing = true }
-            .onDisappear { isPulsing = false }
+            .frame(width: 150, height: 150)
+            .animation(.easeOut(duration: 0.1), value: displayLevel)
+            .animation(.spring(response: 0.28, dampingFraction: 0.72), value: speakBurst)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) {
+                    idleBreathing = true
+                }
+            }
+            .onDisappear {
+                idleBreathing = false
+                displayLevel = 0
+                speakBurst = 0
+            }
+            .onChange(of: inputLevel) { _, newValue in
+                updateDisplayLevel(newValue)
+            }
 
             Spacer()
+        }
+    }
+
+    private func updateDisplayLevel(_ raw: Double) {
+        let clamped = min(1, max(0, raw))
+        let wasSpeaking = displayLevel >= speakingThreshold
+        let attack = 0.62
+        let release = 0.22
+        let alpha = clamped > displayLevel ? attack : release
+        let nextLevel = displayLevel * (1 - alpha) + clamped * alpha
+        displayLevel = nextLevel
+
+        if nextLevel >= speakingThreshold && !wasSpeaking {
+            speakBurst = 1.0
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(280))
+                withAnimation(.easeOut(duration: 0.35)) {
+                    speakBurst = 0
+                }
+            }
         }
     }
 }

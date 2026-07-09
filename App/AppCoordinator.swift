@@ -1782,7 +1782,7 @@ final class AppCoordinator: ObservableObject {
                 return
             }
 
-            let smoothing = 0.35
+            let smoothing = 0.52
             let smoothed = (self.trainingInputLevelSmoothed * (1 - smoothing)) + (level * smoothing)
             self.trainingInputLevelSmoothed = min(1, max(0, smoothed))
             self.appState.trainingInputLevel = self.trainingInputLevelSmoothed
@@ -1810,7 +1810,7 @@ final class AppCoordinator: ObservableObject {
         let rms = sqrt(sumSquares / Double(frameLength))
         guard rms.isFinite else { return nil }
 
-        let displayMaximum = 0.12
+        let displayMaximum = 0.09
         return min(1, max(0, rms / displayMaximum))
     }
 }

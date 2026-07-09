@@ -123,6 +123,7 @@ final class PanicDetector {
 
         windowToReset?.reset()
 
+        DiagnosticsLog.shared.finalizeActiveDetectionEvent(reason: .detectionPaused)
         DiagnosticsLog.shared.log(category: "Detection", "stopped")
 
         #if DEBUG
