@@ -16,8 +16,12 @@ final class DiagnosticsLog: @unchecked Sendable {
         let threshold: Double
         let strongPeakThreshold: Double
         let nearMatchSmoothedThreshold: Double
+        let peakFingerprintThreshold: Double
         let strictRulePassed: Bool
         let nearMatchRulePassed: Bool
+        let peakFingerprintRulePassed: Bool
+        let eventPeakFingerprintRulePassed: Bool
+        let eventAlreadyFired: Bool
         let fired: Bool
         let inCooldown: Bool
         let qualifies: Bool
@@ -95,14 +99,18 @@ final class DiagnosticsLog: @unchecked Sendable {
         threshold: Double,
         strongPeakThreshold: Double,
         nearMatchSmoothedThreshold: Double,
+        peakFingerprintThreshold: Double,
         strictRulePassed: Bool,
         nearMatchRulePassed: Bool,
+        peakFingerprintRulePassed: Bool,
         eventActive: Bool,
         eventAgeMs: Double,
         eventMaxInstantaneous: Double,
         eventMaxSmoothed: Double,
         eventStrictRulePassed: Bool,
         eventNearMatchRulePassed: Bool,
+        eventPeakFingerprintRulePassed: Bool,
+        eventAlreadyFired: Bool,
         belowEndThreshold: Bool,
         forcedEndDueToDuration: Bool,
         qualifies: Bool,
@@ -117,8 +125,12 @@ final class DiagnosticsLog: @unchecked Sendable {
             threshold: threshold,
             strongPeakThreshold: strongPeakThreshold,
             nearMatchSmoothedThreshold: nearMatchSmoothedThreshold,
+            peakFingerprintThreshold: peakFingerprintThreshold,
             strictRulePassed: strictRulePassed,
             nearMatchRulePassed: nearMatchRulePassed,
+            peakFingerprintRulePassed: peakFingerprintRulePassed,
+            eventPeakFingerprintRulePassed: eventPeakFingerprintRulePassed,
+            eventAlreadyFired: eventAlreadyFired,
             fired: fired,
             inCooldown: inCooldown,
             qualifies: qualifies
@@ -136,14 +148,18 @@ final class DiagnosticsLog: @unchecked Sendable {
                 + "threshold=\(formatScore(threshold)) "
                 + "strongPeakThreshold=\(formatScore(strongPeakThreshold)) "
                 + "nearMatchSmoothedThreshold=\(formatScore(nearMatchSmoothedThreshold)) "
+                + "peakFingerprintThreshold=\(formatScore(peakFingerprintThreshold)) "
                 + "strictRulePassed=\(strictRulePassed) "
                 + "nearMatchRulePassed=\(nearMatchRulePassed) "
+                + "peakFingerprintRulePassed=\(peakFingerprintRulePassed) "
                 + "eventActive=\(eventActive) "
                 + "eventAgeMs=\(String(format: "%.0f", eventAgeMs)) "
                 + "eventMaxInstantaneous=\(formatScore(eventMaxInstantaneous)) "
                 + "eventMaxSmoothed=\(formatScore(eventMaxSmoothed)) "
                 + "eventStrictRulePassed=\(eventStrictRulePassed) "
                 + "eventNearMatchRulePassed=\(eventNearMatchRulePassed) "
+                + "eventPeakFingerprintRulePassed=\(eventPeakFingerprintRulePassed) "
+                + "eventAlreadyFired=\(eventAlreadyFired) "
                 + "belowEndThreshold=\(belowEndThreshold) "
                 + "forcedEndDueToDuration=\(forcedEndDueToDuration) "
                 + "qualifies=\(qualifies) "
@@ -200,7 +216,9 @@ final class DiagnosticsLog: @unchecked Sendable {
                 + "maxSmoothed=\(formatScore(event.maxSmoothed)) "
                 + "strictEventRulePassed=\(event.strictRulePassed) "
                 + "nearMatchEventRulePassed=\(event.nearMatchRulePassed) "
+                + "peakFingerprintRulePassed=\(event.peakFingerprintRulePassed) "
                 + "fired=\(event.fired) "
+                + "firedVia=\(event.firedVia.rawValue) "
                 + "cooldownBlocked=\(event.cooldownBlocked) "
                 + "rejectionReason=\(rejection)"
         )
@@ -318,8 +336,12 @@ final class DiagnosticsLog: @unchecked Sendable {
         Main threshold: \(formatScore(decision.threshold))
         Strong peak threshold: \(formatScore(decision.strongPeakThreshold))
         Near-match smoothed threshold: \(formatScore(decision.nearMatchSmoothedThreshold))
+        Peak fingerprint threshold: \(formatScore(decision.peakFingerprintThreshold))
         Strict rule passed: \(decision.strictRulePassed ? "true" : "false")
         Near-match rule passed: \(decision.nearMatchRulePassed ? "true" : "false")
+        Peak fingerprint rule passed: \(decision.peakFingerprintRulePassed ? "true" : "false")
+        Event peak fingerprint rule passed: \(decision.eventPeakFingerprintRulePassed ? "true" : "false")
+        Event already fired: \(decision.eventAlreadyFired ? "true" : "false")
         Qualifies: \(decision.qualifies ? "yes" : "no")
         In cooldown: \(decision.inCooldown ? "yes" : "no")
         Fired: \(decision.fired ? "true" : "false")
@@ -340,6 +362,9 @@ final class DiagnosticsLog: @unchecked Sendable {
             eventEndSmoothedThreshold: \(formatScore(DetectionEventEngine.eventEndSmoothedThreshold))
             eventEndGraceMs: \(String(format: "%.0f", DetectionEventEngine.eventEndGraceMs))
             maxEventDurationMs: \(String(format: "%.0f", DetectionEventEngine.maxEventDurationMs))
+            peakFingerprintThreshold: \(formatScore(DetectionEventEngine.peakFingerprintThreshold))
+            minPeakEventDurationMs: \(String(format: "%.0f", DetectionEventEngine.minPeakEventDurationMs))
+            peakFingerprintSmoothedFloor: \(formatScore(DetectionEventEngine.peakFingerprintSmoothedFloor))
             """,
             """
             === Detection Event Statistics ===
@@ -354,6 +379,10 @@ final class DiagnosticsLog: @unchecked Sendable {
 
         if let last = stats.lastCandidateEvent {
             sections.append(candidateEventSummary(last, title: "=== Last Detection Candidate Event ==="))
+            sections.append("""
+            === Last Event Fired Via ===
+            \(last.fired ? last.firedVia.rawValue : "none (event did not fire)")
+            """)
         } else {
             sections.append("""
             === Last Detection Candidate Event ===
@@ -368,7 +397,7 @@ final class DiagnosticsLog: @unchecked Sendable {
             """)
         } else {
             let summaries = stats.recentCandidateEvents.enumerated().map { index, event in
-                candidateEventSummary(event, title: "--- Event \(index + 1) ---")
+                candidateEventSummary(event, title: "--- Event \(index + 1) (firedVia: \(event.firedVia.rawValue)) ---")
             }
             sections.append("""
             === Recent Candidate Events (last 3) ===
@@ -417,9 +446,12 @@ final class DiagnosticsLog: @unchecked Sendable {
         Duration: \(String(format: "%.2f", event.duration))s
         Max instantaneous: \(formatScore(event.maxInstantaneous)) at \(Self.lineTimestampFormatter.string(from: event.maxInstantaneousAt))
         Max smoothed: \(formatScore(event.maxSmoothed)) at \(Self.lineTimestampFormatter.string(from: event.maxSmoothedAt))
+        Peak fingerprint threshold: \(formatScore(DetectionEventEngine.peakFingerprintThreshold))
         Strict event rule passed: \(event.strictRulePassed ? "true" : "false")
         Near-match event rule passed: \(event.nearMatchRulePassed ? "true" : "false")
+        Peak fingerprint rule passed: \(event.peakFingerprintRulePassed ? "true" : "false")
         Fired: \(event.fired ? "true" : "false")
+        Fired via: \(event.firedVia.rawValue)
         Cooldown blocked: \(event.cooldownBlocked ? "true" : "false")
         Rejection reason: \(rejection)
         """

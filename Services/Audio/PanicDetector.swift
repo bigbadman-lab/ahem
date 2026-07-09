@@ -189,6 +189,7 @@ final class PanicDetector {
         let frameStrictRulePassed = smoothedConfidence >= config.threshold
         let frameNearMatchRulePassed = breakdown.final >= config.strongPeakThreshold
             && smoothedConfidence >= config.nearMatchSmoothedThreshold
+        let framePeakFingerprintRulePassed = breakdown.final >= DetectionEventEngine.peakFingerprintThreshold
 
         let aboveEventFloor = breakdown.final >= DetectionEventEngine.scoreObservationFloor
             || smoothedConfidence >= DetectionEventEngine.scoreObservationFloor
@@ -223,14 +224,18 @@ final class PanicDetector {
             threshold: config.threshold,
             strongPeakThreshold: config.strongPeakThreshold,
             nearMatchSmoothedThreshold: config.nearMatchSmoothedThreshold,
+            peakFingerprintThreshold: DetectionEventEngine.peakFingerprintThreshold,
             strictRulePassed: frameStrictRulePassed,
             nearMatchRulePassed: frameNearMatchRulePassed,
+            peakFingerprintRulePassed: framePeakFingerprintRulePassed,
             eventActive: eventSnapshot.active,
             eventAgeMs: eventSnapshot.eventAgeMs,
             eventMaxInstantaneous: eventSnapshot.maxInstantaneous,
             eventMaxSmoothed: eventSnapshot.maxSmoothed,
             eventStrictRulePassed: eventSnapshot.strictRulePassed,
             eventNearMatchRulePassed: eventSnapshot.nearMatchRulePassed,
+            eventPeakFingerprintRulePassed: eventSnapshot.eventPeakFingerprintRulePassed,
+            eventAlreadyFired: eventSnapshot.eventAlreadyFired,
             belowEndThreshold: eventSnapshot.belowEndThreshold,
             forcedEndDueToDuration: eventSnapshot.forcedEndDueToDuration,
             qualifies: eventQualifiesWithGates,
@@ -285,11 +290,22 @@ final class PanicDetector {
         confidenceHistory.removeAll(keepingCapacity: true)
         stateLock.unlock()
 
-        let ruleLabel = eventSnapshot.nearMatchRulePassed ? "near-match event" : "strict event"
+        let firedVia = eventSnapshot.firedVia ?? .none
+        let ruleLabel: String
+        switch firedVia {
+        case .strictEvent:
+            ruleLabel = "strict event"
+        case .nearMatchEvent:
+            ruleLabel = "near-match event"
+        case .peakFingerprint:
+            ruleLabel = "peak fingerprint"
+        case .none:
+            ruleLabel = "unknown"
+        }
 
         #if DEBUG
         print(
-            "[Detection] Detection event emitted via \(ruleLabel) "
+            "[Detection] Detection event emitted via \(ruleLabel) (firedVia=\(firedVia.rawValue)) "
                 + formatDetectionSummary(
                     breakdown: breakdown,
                     smoothed: smoothedConfidence,
@@ -303,7 +319,7 @@ final class PanicDetector {
 
         DiagnosticsLog.shared.log(
             category: "Detection",
-            "event emitted via \(ruleLabel) "
+            "event emitted via \(ruleLabel) (firedVia=\(firedVia.rawValue)) "
                 + formatDetectionSummary(
                     breakdown: breakdown,
                     smoothed: smoothedConfidence,

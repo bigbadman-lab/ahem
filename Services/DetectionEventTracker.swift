@@ -11,6 +11,13 @@ enum DetectionEventRejectionReason: String, Equatable {
     case unknown = "unknown"
 }
 
+enum DetectionEventFiredVia: String, Equatable {
+    case strictEvent = "strict_event"
+    case nearMatchEvent = "near_match_event"
+    case peakFingerprint = "peak_fingerprint"
+    case none = "none"
+}
+
 struct DetectionCandidateEvent: Equatable {
     let startTime: Date
     let endTime: Date
@@ -20,7 +27,9 @@ struct DetectionCandidateEvent: Equatable {
     let maxSmoothedAt: Date
     let strictRulePassed: Bool
     let nearMatchRulePassed: Bool
+    let peakFingerprintRulePassed: Bool
     let fired: Bool
+    let firedVia: DetectionEventFiredVia
     let cooldownBlocked: Bool
     let rejectionReason: DetectionEventRejectionReason?
 
@@ -38,7 +47,11 @@ struct DetectionEventSnapshot: Equatable {
     let maxSmoothed: Double
     let strictRulePassed: Bool
     let nearMatchRulePassed: Bool
+    let peakFingerprintRulePassed: Bool
+    let eventPeakFingerprintRulePassed: Bool
+    let eventAlreadyFired: Bool
     let qualifies: Bool
+    let firedVia: DetectionEventFiredVia?
 }
 
 struct DetectionEventStatistics: Equatable {
@@ -66,6 +79,11 @@ final class DetectionEventEngine: @unchecked Sendable {
     static let eventEndGraceMs: Double = 700
     static let maxEventDurationMs: Double = 2500
 
+    // Peak fingerprint matching.
+    static let peakFingerprintThreshold: Double = 0.85
+    static let minPeakEventDurationMs: Double = 150
+    static let peakFingerprintSmoothedFloor: Double = 0.55
+
     struct ProcessResult: Equatable {
         let snapshot: DetectionEventSnapshot
         let shouldFire: Bool
@@ -84,7 +102,16 @@ final class DetectionEventEngine: @unchecked Sendable {
         var maxSmoothedAt: Date
 
         var hasFired: Bool
+        var firedVia: DetectionEventFiredVia
         var cooldownBlocked: Bool
+    }
+
+    private struct EventRuleEvaluation: Equatable {
+        let strictRulePassed: Bool
+        let nearMatchRulePassed: Bool
+        let peakFingerprintRulePassed: Bool
+        let qualifies: Bool
+        let firedVia: DetectionEventFiredVia
     }
 
     private let lock = NSLock()
@@ -147,7 +174,8 @@ final class DetectionEventEngine: @unchecked Sendable {
             return ProcessResult(
                 snapshot: inactiveSnapshot(
                     forcedEndDueToDuration: false,
-                    belowEndThreshold: false
+                    belowEndThreshold: false,
+                    instantaneous: instantaneous
                 ),
                 shouldFire: false,
                 endedEvent: nil
@@ -167,6 +195,8 @@ final class DetectionEventEngine: @unchecked Sendable {
         let belowEndThreshold = instantaneous < Self.eventEndInstantaneousThreshold
             && smoothed < Self.eventEndSmoothedThreshold
 
+        let framePeakFingerprintRulePassed = instantaneous >= Self.peakFingerprintThreshold
+
         if var event = activeEvent {
             let ageMs = timestamp.timeIntervalSince(event.startTime) * 1000
             let forcedEndDueToDuration = ageMs >= Self.maxEventDurationMs
@@ -178,12 +208,10 @@ final class DetectionEventEngine: @unchecked Sendable {
                 timestamp: timestamp
             )
 
-            let rules = eventRules(
-                maxSmoothed: event.maxSmoothed,
-                maxInstantaneous: event.maxInstantaneous,
-                mainThreshold: event.mainThreshold,
-                strongPeakThreshold: event.strongPeakThreshold,
-                nearMatchSmoothedThreshold: event.nearMatchSmoothedThreshold
+            let rules = evaluateEventRules(
+                event: event,
+                currentSmoothed: smoothed,
+                ageMs: ageMs
             )
 
             if rules.qualifies && inCooldown && !event.hasFired {
@@ -196,8 +224,11 @@ final class DetectionEventEngine: @unchecked Sendable {
                 && !inCooldown
                 && !event.hasFired
 
+            var firedViaThisFrame: DetectionEventFiredVia?
             if shouldFire {
                 event.hasFired = true
+                event.firedVia = rules.firedVia
+                firedViaThisFrame = rules.firedVia
                 firedEventCount += 1
             }
 
@@ -236,7 +267,6 @@ final class DetectionEventEngine: @unchecked Sendable {
                 activeEvent = event
             }
 
-            // If we ended, activeEvent is cleared in endActiveEventLocked.
             if endedEvent == nil {
                 activeEvent = event
                 snapshotForcedEnd = false
@@ -254,7 +284,11 @@ final class DetectionEventEngine: @unchecked Sendable {
                 maxSmoothed: event.maxSmoothed,
                 strictRulePassed: rules.strictRulePassed,
                 nearMatchRulePassed: rules.nearMatchRulePassed,
-                qualifies: rules.qualifies
+                peakFingerprintRulePassed: framePeakFingerprintRulePassed,
+                eventPeakFingerprintRulePassed: rules.peakFingerprintRulePassed,
+                eventAlreadyFired: event.hasFired,
+                qualifies: rules.qualifies,
+                firedVia: firedViaThisFrame
             )
 
             return ProcessResult(
@@ -264,12 +298,12 @@ final class DetectionEventEngine: @unchecked Sendable {
             )
         }
 
-        // No active event.
         guard startCandidate else {
             return ProcessResult(
                 snapshot: inactiveSnapshot(
                     forcedEndDueToDuration: false,
-                    belowEndThreshold: belowEndThreshold
+                    belowEndThreshold: belowEndThreshold,
+                    instantaneous: instantaneous
                 ),
                 shouldFire: false,
                 endedEvent: nil
@@ -278,7 +312,7 @@ final class DetectionEventEngine: @unchecked Sendable {
 
         candidateEventCount += 1
 
-        let event = InProgressEvent(
+        var event = InProgressEvent(
             startTime: timestamp,
             mainThreshold: threshold,
             strongPeakThreshold: strongPeakThreshold,
@@ -288,15 +322,14 @@ final class DetectionEventEngine: @unchecked Sendable {
             maxInstantaneousAt: timestamp,
             maxSmoothedAt: timestamp,
             hasFired: false,
+            firedVia: .none,
             cooldownBlocked: false
         )
 
-        let rules = eventRules(
-            maxSmoothed: event.maxSmoothed,
-            maxInstantaneous: event.maxInstantaneous,
-            mainThreshold: event.mainThreshold,
-            strongPeakThreshold: event.strongPeakThreshold,
-            nearMatchSmoothedThreshold: event.nearMatchSmoothedThreshold
+        let rules = evaluateEventRules(
+            event: event,
+            currentSmoothed: smoothed,
+            ageMs: 0
         )
 
         let shouldFire = rules.qualifies
@@ -305,27 +338,33 @@ final class DetectionEventEngine: @unchecked Sendable {
             && !inCooldown
             && !event.hasFired
 
-        var storedEvent = event
-        if rules.qualifies && inCooldown && !storedEvent.hasFired {
-            storedEvent.cooldownBlocked = true
+        var firedViaThisFrame: DetectionEventFiredVia?
+        if rules.qualifies && inCooldown && !event.hasFired {
+            event.cooldownBlocked = true
         }
         if shouldFire {
-            storedEvent.hasFired = true
+            event.hasFired = true
+            event.firedVia = rules.firedVia
+            firedViaThisFrame = rules.firedVia
             firedEventCount += 1
         }
 
-        activeEvent = storedEvent
+        activeEvent = event
 
         let snapshot = DetectionEventSnapshot(
             active: true,
             eventAgeMs: 0,
             belowEndThreshold: belowEndThreshold,
             forcedEndDueToDuration: false,
-            maxInstantaneous: storedEvent.maxInstantaneous,
-            maxSmoothed: storedEvent.maxSmoothed,
+            maxInstantaneous: event.maxInstantaneous,
+            maxSmoothed: event.maxSmoothed,
             strictRulePassed: rules.strictRulePassed,
             nearMatchRulePassed: rules.nearMatchRulePassed,
-            qualifies: rules.qualifies
+            peakFingerprintRulePassed: framePeakFingerprintRulePassed,
+            eventPeakFingerprintRulePassed: rules.peakFingerprintRulePassed,
+            eventAlreadyFired: event.hasFired,
+            qualifies: rules.qualifies,
+            firedVia: firedViaThisFrame
         )
 
         return ProcessResult(
@@ -340,11 +379,63 @@ final class DetectionEventEngine: @unchecked Sendable {
         defer { lock.unlock() }
         guard let event = activeEvent else { return nil }
 
-        // Force-close with explicit reason.
         let ended = endActiveEventLocked(event, endTime: Date(), forcedReason: reason)
         activeEvent = nil
         belowEndSince = nil
         return ended
+    }
+
+    private func evaluateEventRules(
+        event: InProgressEvent,
+        currentSmoothed: Double,
+        ageMs: Double
+    ) -> EventRuleEvaluation {
+        let strictRulePassed = event.maxSmoothed >= event.mainThreshold
+        let nearMatchRulePassed = event.maxInstantaneous >= event.strongPeakThreshold
+            && event.maxSmoothed >= event.nearMatchSmoothedThreshold
+
+        let peakFingerprintRulePassed = peakFingerprintRulePasses(
+            event: event,
+            currentSmoothed: currentSmoothed,
+            ageMs: ageMs
+        )
+
+        let qualifies = strictRulePassed || nearMatchRulePassed || peakFingerprintRulePassed
+
+        let firedVia: DetectionEventFiredVia
+        if strictRulePassed {
+            firedVia = .strictEvent
+        } else if nearMatchRulePassed {
+            firedVia = .nearMatchEvent
+        } else if peakFingerprintRulePassed {
+            firedVia = .peakFingerprint
+        } else {
+            firedVia = .none
+        }
+
+        return EventRuleEvaluation(
+            strictRulePassed: strictRulePassed,
+            nearMatchRulePassed: nearMatchRulePassed,
+            peakFingerprintRulePassed: peakFingerprintRulePassed,
+            qualifies: qualifies,
+            firedVia: firedVia
+        )
+    }
+
+    private func peakFingerprintRulePasses(
+        event: InProgressEvent,
+        currentSmoothed: Double,
+        ageMs: Double
+    ) -> Bool {
+        guard ageMs >= Self.minPeakEventDurationMs else { return false }
+        guard ageMs <= Self.maxEventDurationMs else { return false }
+        guard event.maxInstantaneous >= Self.peakFingerprintThreshold else { return false }
+        guard event.maxInstantaneousAt >= event.startTime else { return false }
+
+        let recentSmoothed = max(event.maxSmoothed, currentSmoothed)
+        guard recentSmoothed >= Self.peakFingerprintSmoothedFloor else { return false }
+
+        return true
     }
 
     private func updatePeaks(
@@ -363,22 +454,10 @@ final class DetectionEventEngine: @unchecked Sendable {
         }
     }
 
-    private func eventRules(
-        maxSmoothed: Double,
-        maxInstantaneous: Double,
-        mainThreshold: Double,
-        strongPeakThreshold: Double,
-        nearMatchSmoothedThreshold: Double
-    ) -> (strictRulePassed: Bool, nearMatchRulePassed: Bool, qualifies: Bool) {
-        let strictRulePassed = maxSmoothed >= mainThreshold
-        let nearMatchRulePassed = maxInstantaneous >= strongPeakThreshold
-            && maxSmoothed >= nearMatchSmoothedThreshold
-        return (strictRulePassed, nearMatchRulePassed, strictRulePassed || nearMatchRulePassed)
-    }
-
     private func inactiveSnapshot(
         forcedEndDueToDuration: Bool,
-        belowEndThreshold: Bool
+        belowEndThreshold: Bool,
+        instantaneous: Double
     ) -> DetectionEventSnapshot {
         DetectionEventSnapshot(
             active: false,
@@ -389,7 +468,11 @@ final class DetectionEventEngine: @unchecked Sendable {
             maxSmoothed: 0,
             strictRulePassed: false,
             nearMatchRulePassed: false,
-            qualifies: false
+            peakFingerprintRulePassed: instantaneous >= Self.peakFingerprintThreshold,
+            eventPeakFingerprintRulePassed: false,
+            eventAlreadyFired: false,
+            qualifies: false,
+            firedVia: nil
         )
     }
 
@@ -399,12 +482,11 @@ final class DetectionEventEngine: @unchecked Sendable {
         endTime: Date,
         forcedReason: DetectionEventRejectionReason?
     ) -> DetectionCandidateEvent {
-        let rules = eventRules(
-            maxSmoothed: event.maxSmoothed,
-            maxInstantaneous: event.maxInstantaneous,
-            mainThreshold: event.mainThreshold,
-            strongPeakThreshold: event.strongPeakThreshold,
-            nearMatchSmoothedThreshold: event.nearMatchSmoothedThreshold
+        let ageMs = endTime.timeIntervalSince(event.startTime) * 1000
+        let rules = evaluateEventRules(
+            event: event,
+            currentSmoothed: event.maxSmoothed,
+            ageMs: ageMs
         )
 
         let rejection: DetectionEventRejectionReason?
@@ -420,6 +502,8 @@ final class DetectionEventEngine: @unchecked Sendable {
             rejection = .unknown
         }
 
+        let firedVia = event.hasFired ? event.firedVia : .none
+
         let candidate = DetectionCandidateEvent(
             startTime: event.startTime,
             endTime: endTime,
@@ -429,15 +513,14 @@ final class DetectionEventEngine: @unchecked Sendable {
             maxSmoothedAt: event.maxSmoothedAt,
             strictRulePassed: rules.strictRulePassed,
             nearMatchRulePassed: rules.nearMatchRulePassed,
+            peakFingerprintRulePassed: rules.peakFingerprintRulePassed,
             fired: event.hasFired,
+            firedVia: firedVia,
             cooldownBlocked: event.cooldownBlocked,
             rejectionReason: event.hasFired ? nil : rejection
         )
 
-        candidateEventCount += 0 // explicit: already incremented on start
-        if event.hasFired {
-            // keep fired counters already incremented on fire
-        } else {
+        if !event.hasFired {
             rejectedEventCount += 1
         }
 
@@ -453,4 +536,3 @@ final class DetectionEventEngine: @unchecked Sendable {
         return candidate
     }
 }
-
