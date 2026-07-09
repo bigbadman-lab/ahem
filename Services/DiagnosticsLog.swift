@@ -39,7 +39,15 @@ final class DiagnosticsLog: @unchecked Sendable {
     private(set) var lastDetectionDecision: LastDetectionDecision?
     private(set) var lastBrowserHideAttempt: LastBrowserHideAttempt?
 
-    private let eventTracker = DetectionEventTracker()
+    private var eventStatistics = DetectionEventStatistics(
+        highestInstantaneousSinceLaunch: 0,
+        highestSmoothedSinceLaunch: 0,
+        candidateEventCount: 0,
+        firedEventCount: 0,
+        rejectedEventCount: 0,
+        lastCandidateEvent: nil,
+        recentCandidateEvents: []
+    )
 
     private static let lineTimestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -77,9 +85,15 @@ final class DiagnosticsLog: @unchecked Sendable {
         nearMatchSmoothedThreshold: Double,
         strictRulePassed: Bool,
         nearMatchRulePassed: Bool,
-        fired: Bool,
+        eventActive: Bool,
+        eventMaxInstantaneous: Double,
+        eventMaxSmoothed: Double,
+        eventStrictRulePassed: Bool,
+        eventNearMatchRulePassed: Bool,
+        qualifies: Bool,
         inCooldown: Bool,
-        qualifies: Bool
+        fired: Bool,
+        eventStatistics: DetectionEventStatistics
     ) {
         let decision = LastDetectionDecision(
             recordedAt: Date(),
@@ -97,6 +111,7 @@ final class DiagnosticsLog: @unchecked Sendable {
 
         lock.lock()
         lastDetectionDecision = decision
+        self.eventStatistics = eventStatistics
         lock.unlock()
 
         log(
@@ -108,47 +123,43 @@ final class DiagnosticsLog: @unchecked Sendable {
                 + "nearMatchSmoothedThreshold=\(formatScore(nearMatchSmoothedThreshold)) "
                 + "strictRulePassed=\(strictRulePassed) "
                 + "nearMatchRulePassed=\(nearMatchRulePassed) "
+                + "eventActive=\(eventActive) "
+                + "eventMaxInstantaneous=\(formatScore(eventMaxInstantaneous)) "
+                + "eventMaxSmoothed=\(formatScore(eventMaxSmoothed)) "
+                + "eventStrictRulePassed=\(eventStrictRulePassed) "
+                + "eventNearMatchRulePassed=\(eventNearMatchRulePassed) "
                 + "qualifies=\(qualifies) "
                 + "inCooldown=\(inCooldown) "
                 + "fired=\(fired)"
         )
-
-        let endedEvent = eventTracker.observe(
-            DetectionEventTracker.Observation(
-                timestamp: Date(),
-                instantaneous: instantaneous,
-                smoothed: smoothed,
-                threshold: threshold,
-                strongPeakThreshold: strongPeakThreshold,
-                nearMatchSmoothedThreshold: nearMatchSmoothedThreshold,
-                strictRulePassed: strictRulePassed,
-                nearMatchRulePassed: nearMatchRulePassed,
-                qualifies: qualifies,
-                inCooldown: inCooldown,
-                fired: fired
-            )
-        )
-
-        if let endedEvent {
-            logDetectionEventEnded(endedEvent)
-        }
     }
 
-    func finalizeActiveDetectionEvent(reason: DetectionEventTracker.RejectionReason) {
-        guard let endedEvent = eventTracker.finalizeActiveEvent(reason: reason) else { return }
-        logDetectionEventEnded(endedEvent)
+    func updateDetectionEventStatistics(_ statistics: DetectionEventStatistics) {
+        lock.lock()
+        eventStatistics = statistics
+        lock.unlock()
     }
 
-    private func logDetectionEventEnded(_ event: DetectionEventTracker.CandidateEvent) {
+    func recordDetectionEventEnded(_ event: DetectionCandidateEvent) {
+        logDetectionEventEnded(event)
+    }
+
+    func finalizeActiveDetectionEvent(reason: DetectionEventRejectionReason) {
+        // Retained for API compatibility; PanicDetector finalizes via its own engine.
+        _ = reason
+    }
+
+    private func logDetectionEventEnded(_ event: DetectionCandidateEvent) {
         let rejection = event.rejectionReason?.rawValue ?? "none"
         log(
             category: "DetectionEvent",
             "ended duration=\(String(format: "%.2f", event.duration))s "
                 + "maxInstantaneous=\(formatScore(event.maxInstantaneous)) "
                 + "maxSmoothed=\(formatScore(event.maxSmoothed)) "
-                + "strictRulePassed=\(event.strictRulePassed) "
-                + "nearMatchRulePassed=\(event.nearMatchRulePassed) "
+                + "strictEventRulePassed=\(event.strictRulePassed) "
+                + "nearMatchEventRulePassed=\(event.nearMatchRulePassed) "
                 + "fired=\(event.fired) "
+                + "cooldownBlocked=\(event.cooldownBlocked) "
                 + "rejectionReason=\(rejection)"
         )
     }
@@ -267,13 +278,15 @@ final class DiagnosticsLog: @unchecked Sendable {
     }
 
     private func detectionEventSection() -> String {
-        let stats = eventTracker.snapshot()
+        lock.lock()
+        let stats = eventStatistics
+        lock.unlock()
 
         var sections: [String] = [
             """
             === Detection Event Statistics ===
-            Highest instantaneous since launch: \(formatScore(stats.highestInstantaneous))
-            Highest smoothed since launch: \(formatScore(stats.highestSmoothed))
+            Highest instantaneous since launch: \(formatScore(stats.highestInstantaneousSinceLaunch))
+            Highest smoothed since launch: \(formatScore(stats.highestSmoothedSinceLaunch))
             Candidate events observed: \(stats.candidateEventCount)
             Fired events: \(stats.firedEventCount)
             Rejected candidate events: \(stats.rejectedEventCount)
@@ -308,7 +321,7 @@ final class DiagnosticsLog: @unchecked Sendable {
     }
 
     private func candidateEventSummary(
-        _ event: DetectionEventTracker.CandidateEvent,
+        _ event: DetectionCandidateEvent,
         title: String
     ) -> String {
         let rejection = event.rejectionReason?.rawValue ?? "none"
@@ -319,8 +332,8 @@ final class DiagnosticsLog: @unchecked Sendable {
         Duration: \(String(format: "%.2f", event.duration))s
         Max instantaneous: \(formatScore(event.maxInstantaneous)) at \(Self.lineTimestampFormatter.string(from: event.maxInstantaneousAt))
         Max smoothed: \(formatScore(event.maxSmoothed)) at \(Self.lineTimestampFormatter.string(from: event.maxSmoothedAt))
-        Strict rule passed: \(event.strictRulePassed ? "true" : "false")
-        Near-match rule passed: \(event.nearMatchRulePassed ? "true" : "false")
+        Strict event rule passed: \(event.strictRulePassed ? "true" : "false")
+        Near-match event rule passed: \(event.nearMatchRulePassed ? "true" : "false")
         Fired: \(event.fired ? "true" : "false")
         Cooldown blocked: \(event.cooldownBlocked ? "true" : "false")
         Rejection reason: \(rejection)

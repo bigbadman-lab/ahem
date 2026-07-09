@@ -2,67 +2,76 @@ import Foundation
 
 // TEMP: Release diagnostics — remove when Debug vs Release comparison is complete.
 
-/// Diagnostic-only tracker for candidate cough/AHEM score events. Does not affect detection.
-final class DetectionEventTracker: @unchecked Sendable {
-    enum RejectionReason: String, Equatable {
-        case scoreBelowThreshold = "score_below_threshold"
-        case strongPeakMissing = "strong_peak_missing"
-        case smoothedScoreTooLow = "smoothed_score_too_low"
-        case cooldownActive = "cooldown_active"
-        case detectionPaused = "detection_paused"
-        case noFingerprint = "no_fingerprint"
-        case unknown = "unknown"
+enum DetectionEventRejectionReason: String, Equatable {
+    case scoreBelowThreshold = "score_below_threshold"
+    case cooldownActive = "cooldown_active"
+    case detectionPaused = "detection_paused"
+    case noFingerprint = "no_fingerprint"
+    case alreadyFiredThisEvent = "already_fired_this_event"
+    case unknown = "unknown"
+}
+
+struct DetectionCandidateEvent: Equatable {
+    let startTime: Date
+    let endTime: Date
+    let maxInstantaneous: Double
+    let maxSmoothed: Double
+    let maxInstantaneousAt: Date
+    let maxSmoothedAt: Date
+    let strictRulePassed: Bool
+    let nearMatchRulePassed: Bool
+    let fired: Bool
+    let cooldownBlocked: Bool
+    let rejectionReason: DetectionEventRejectionReason?
+
+    var duration: TimeInterval {
+        endTime.timeIntervalSince(startTime)
     }
+}
 
-    struct CandidateEvent: Equatable {
-        let startTime: Date
-        let endTime: Date
-        let maxInstantaneous: Double
-        let maxSmoothed: Double
-        let maxInstantaneousAt: Date
-        let maxSmoothedAt: Date
-        let strictRulePassed: Bool
-        let nearMatchRulePassed: Bool
-        let fired: Bool
-        let cooldownBlocked: Bool
-        let rejectionReason: RejectionReason?
+struct DetectionEventSnapshot: Equatable {
+    let active: Bool
+    let maxInstantaneous: Double
+    let maxSmoothed: Double
+    let strictRulePassed: Bool
+    let nearMatchRulePassed: Bool
+    let qualifies: Bool
+}
 
-        var duration: TimeInterval {
-            endTime.timeIntervalSince(startTime)
-        }
+struct DetectionEventStatistics: Equatable {
+    let highestInstantaneousSinceLaunch: Double
+    let highestSmoothedSinceLaunch: Double
+    let candidateEventCount: Int
+    let firedEventCount: Int
+    let rejectedEventCount: Int
+    let lastCandidateEvent: DetectionCandidateEvent?
+    let recentCandidateEvents: [DetectionCandidateEvent]
+}
+
+/// Tracks candidate cough/AHEM score events and decides event-level qualification.
+final class DetectionEventEngine: @unchecked Sendable {
+    static let eventFloor = 0.50
+    static let gracePeriod: TimeInterval = 0.60
+
+    struct ProcessResult: Equatable {
+        let snapshot: DetectionEventSnapshot
+        let shouldFire: Bool
+        let endedEvent: DetectionCandidateEvent?
     }
-
-    struct Observation {
-        let timestamp: Date
-        let instantaneous: Double
-        let smoothed: Double
-        let threshold: Double
-        let strongPeakThreshold: Double
-        let nearMatchSmoothedThreshold: Double
-        let strictRulePassed: Bool
-        let nearMatchRulePassed: Bool
-        let qualifies: Bool
-        let inCooldown: Bool
-        let fired: Bool
-    }
-
-    static let observationFloor = 0.50
-    static let gracePeriod: TimeInterval = 0.65
 
     private struct InProgressEvent {
         let startTime: Date
         let threshold: Double
         let strongPeakThreshold: Double
         let nearMatchSmoothedThreshold: Double
-        var lastAboveFloorAt: Date
+        var lastAboveFloorTime: Date
         var maxInstantaneous: Double
         var maxSmoothed: Double
+        var latestInstantaneous: Double
+        var latestSmoothed: Double
         var maxInstantaneousAt: Date
         var maxSmoothedAt: Date
-        var strictRulePassed: Bool
-        var nearMatchRulePassed: Bool
-        var everQualified: Bool
-        var everFired: Bool
+        var hasFired: Bool
         var cooldownBlocked: Bool
     }
 
@@ -70,106 +79,235 @@ final class DetectionEventTracker: @unchecked Sendable {
     private var activeEvent: InProgressEvent?
     private var belowFloorSince: Date?
 
-    private(set) var highestInstantaneousSinceLaunch: Double = 0
-    private(set) var highestSmoothedSinceLaunch: Double = 0
-    private(set) var candidateEventCount = 0
-    private(set) var firedEventCount = 0
-    private(set) var rejectedEventCount = 0
-    private(set) var lastCandidateEvent: CandidateEvent?
-    private var recentCandidateEvents: [CandidateEvent] = []
+    private var highestInstantaneousSinceLaunch: Double = 0
+    private var highestSmoothedSinceLaunch: Double = 0
+    private var candidateEventCount = 0
+    private var firedEventCount = 0
+    private var rejectedEventCount = 0
+    private var lastCandidateEvent: DetectionCandidateEvent?
+    private var recentCandidateEvents: [DetectionCandidateEvent] = []
 
     private let maxRecentEvents = 3
 
-    @discardableResult
-    func observe(_ observation: Observation) -> CandidateEvent? {
+    func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        activeEvent = nil
+        belowFloorSince = nil
+    }
+
+    func statistics() -> DetectionEventStatistics {
+        lock.lock()
+        defer { lock.unlock() }
+        return DetectionEventStatistics(
+            highestInstantaneousSinceLaunch: highestInstantaneousSinceLaunch,
+            highestSmoothedSinceLaunch: highestSmoothedSinceLaunch,
+            candidateEventCount: candidateEventCount,
+            firedEventCount: firedEventCount,
+            rejectedEventCount: rejectedEventCount,
+            lastCandidateEvent: lastCandidateEvent,
+            recentCandidateEvents: recentCandidateEvents
+        )
+    }
+
+    func processFrame(
+        timestamp: Date,
+        instantaneous: Double,
+        smoothed: Double,
+        threshold: Double,
+        strongPeakThreshold: Double,
+        nearMatchSmoothedThreshold: Double,
+        passesPeakSanity: Bool,
+        passesNoiseFloor: Bool,
+        inCooldown: Bool,
+        detectorActive: Bool
+    ) -> ProcessResult {
         lock.lock()
         defer { lock.unlock() }
 
-        if observation.instantaneous > highestInstantaneousSinceLaunch {
-            highestInstantaneousSinceLaunch = observation.instantaneous
+        if instantaneous > highestInstantaneousSinceLaunch {
+            highestInstantaneousSinceLaunch = instantaneous
         }
-        if observation.smoothed > highestSmoothedSinceLaunch {
-            highestSmoothedSinceLaunch = observation.smoothed
+        if smoothed > highestSmoothedSinceLaunch {
+            highestSmoothedSinceLaunch = smoothed
         }
 
-        let aboveFloor = observation.instantaneous >= Self.observationFloor
+        let aboveFloor = Self.isAboveFloor(instantaneous: instantaneous, smoothed: smoothed)
+        var endedEvent: DetectionCandidateEvent?
 
         if var event = activeEvent {
             if aboveFloor {
                 belowFloorSince = nil
-                event.lastAboveFloorAt = observation.timestamp
-                updateEventPeaks(&event, with: observation)
+                updateEventPeaks(
+                    &event,
+                    timestamp: timestamp,
+                    instantaneous: instantaneous,
+                    smoothed: smoothed
+                )
 
-                if observation.strictRulePassed { event.strictRulePassed = true }
-                if observation.nearMatchRulePassed { event.nearMatchRulePassed = true }
-                if observation.qualifies { event.everQualified = true }
-                if observation.fired { event.everFired = true }
-                if observation.inCooldown && observation.qualifies { event.cooldownBlocked = true }
+                let shouldFire = evaluateFire(
+                    for: &event,
+                    threshold: threshold,
+                    strongPeakThreshold: strongPeakThreshold,
+                    nearMatchSmoothedThreshold: nearMatchSmoothedThreshold,
+                    passesPeakSanity: passesPeakSanity,
+                    passesNoiseFloor: passesNoiseFloor,
+                    inCooldown: inCooldown,
+                    detectorActive: detectorActive
+                )
 
                 activeEvent = event
-                return nil
+
+                return ProcessResult(
+                    snapshot: snapshot(for: event),
+                    shouldFire: shouldFire,
+                    endedEvent: nil
+                )
             }
 
             if belowFloorSince == nil {
-                belowFloorSince = observation.timestamp
+                belowFloorSince = timestamp
             }
 
             if let belowSince = belowFloorSince,
-               observation.timestamp.timeIntervalSince(belowSince) >= Self.gracePeriod {
-                return endActiveEventLocked(event, endTime: observation.timestamp)
+               timestamp.timeIntervalSince(belowSince) >= Self.gracePeriod {
+                endedEvent = endActiveEventLocked(event, endTime: timestamp)
+                activeEvent = nil
+                belowFloorSince = nil
+
+                return ProcessResult(
+                    snapshot: inactiveSnapshot(),
+                    shouldFire: false,
+                    endedEvent: endedEvent
+                )
             }
-            return nil
+
+            return ProcessResult(
+                snapshot: snapshot(for: event),
+                shouldFire: false,
+                endedEvent: nil
+            )
         }
 
-        guard aboveFloor else { return nil }
+        guard aboveFloor else {
+            return ProcessResult(
+                snapshot: inactiveSnapshot(),
+                shouldFire: false,
+                endedEvent: nil
+            )
+        }
 
         belowFloorSince = nil
-        activeEvent = InProgressEvent(
-            startTime: observation.timestamp,
-            threshold: observation.threshold,
-            strongPeakThreshold: observation.strongPeakThreshold,
-            nearMatchSmoothedThreshold: observation.nearMatchSmoothedThreshold,
-            lastAboveFloorAt: observation.timestamp,
-            maxInstantaneous: observation.instantaneous,
-            maxSmoothed: observation.smoothed,
-            maxInstantaneousAt: observation.timestamp,
-            maxSmoothedAt: observation.timestamp,
-            strictRulePassed: observation.strictRulePassed,
-            nearMatchRulePassed: observation.nearMatchRulePassed,
-            everQualified: observation.qualifies,
-            everFired: observation.fired,
-            cooldownBlocked: observation.inCooldown && observation.qualifies
+        candidateEventCount += 1
+
+        var event = InProgressEvent(
+            startTime: timestamp,
+            threshold: threshold,
+            strongPeakThreshold: strongPeakThreshold,
+            nearMatchSmoothedThreshold: nearMatchSmoothedThreshold,
+            lastAboveFloorTime: timestamp,
+            maxInstantaneous: instantaneous,
+            maxSmoothed: smoothed,
+            latestInstantaneous: instantaneous,
+            latestSmoothed: smoothed,
+            maxInstantaneousAt: timestamp,
+            maxSmoothedAt: timestamp,
+            hasFired: false,
+            cooldownBlocked: false
         )
-        return nil
+
+        let shouldFire = evaluateFire(
+            for: &event,
+            threshold: threshold,
+            strongPeakThreshold: strongPeakThreshold,
+            nearMatchSmoothedThreshold: nearMatchSmoothedThreshold,
+            passesPeakSanity: passesPeakSanity,
+            passesNoiseFloor: passesNoiseFloor,
+            inCooldown: inCooldown,
+            detectorActive: detectorActive
+        )
+
+        activeEvent = event
+
+        return ProcessResult(
+            snapshot: snapshot(for: event),
+            shouldFire: shouldFire,
+            endedEvent: nil
+        )
     }
 
-    func finalizeActiveEvent(reason: RejectionReason) -> CandidateEvent? {
+    private func evaluateFire(
+        for event: inout InProgressEvent,
+        threshold: Double,
+        strongPeakThreshold: Double,
+        nearMatchSmoothedThreshold: Double,
+        passesPeakSanity: Bool,
+        passesNoiseFloor: Bool,
+        inCooldown: Bool,
+        detectorActive: Bool
+    ) -> Bool {
+        let eventRules = Self.eventRules(
+            for: event,
+            threshold: threshold,
+            strongPeakThreshold: strongPeakThreshold,
+            nearMatchSmoothedThreshold: nearMatchSmoothedThreshold
+        )
+
+        if eventRules.qualifies && inCooldown && !event.hasFired {
+            event.cooldownBlocked = true
+        }
+
+        let shouldFire = detectorActive
+            && eventRules.qualifies
+            && passesPeakSanity
+            && passesNoiseFloor
+            && !inCooldown
+            && !event.hasFired
+
+        if shouldFire {
+            event.hasFired = true
+            firedEventCount += 1
+        }
+
+        return shouldFire
+    }
+
+    func finalizeActiveEvent(reason: DetectionEventRejectionReason) -> DetectionCandidateEvent? {
         lock.lock()
         defer { lock.unlock() }
 
         guard let event = activeEvent else { return nil }
-        return endActiveEventLocked(event, endTime: Date(), forcedReason: reason)
+        let ended = endActiveEventLocked(event, endTime: Date(), forcedReason: reason)
+        activeEvent = nil
+        belowFloorSince = nil
+        return ended
     }
 
-    func snapshot() -> (
-        highestInstantaneous: Double,
-        highestSmoothed: Double,
-        candidateEventCount: Int,
-        firedEventCount: Int,
-        rejectedEventCount: Int,
-        lastCandidateEvent: CandidateEvent?,
-        recentCandidateEvents: [CandidateEvent]
-    ) {
-        lock.lock()
-        defer { lock.unlock() }
-        return (
-            highestInstantaneousSinceLaunch,
-            highestSmoothedSinceLaunch,
-            candidateEventCount,
-            firedEventCount,
-            rejectedEventCount,
-            lastCandidateEvent,
-            recentCandidateEvents
+    private func snapshot(for event: InProgressEvent) -> DetectionEventSnapshot {
+        let rules = Self.eventRules(
+            for: event,
+            threshold: event.threshold,
+            strongPeakThreshold: event.strongPeakThreshold,
+            nearMatchSmoothedThreshold: event.nearMatchSmoothedThreshold
+        )
+        return DetectionEventSnapshot(
+            active: true,
+            maxInstantaneous: event.maxInstantaneous,
+            maxSmoothed: event.maxSmoothed,
+            strictRulePassed: rules.strictPassed,
+            nearMatchRulePassed: rules.nearMatchPassed,
+            qualifies: rules.qualifies
+        )
+    }
+
+    private func inactiveSnapshot() -> DetectionEventSnapshot {
+        DetectionEventSnapshot(
+            active: false,
+            maxInstantaneous: 0,
+            maxSmoothed: 0,
+            strictRulePassed: false,
+            nearMatchRulePassed: false,
+            qualifies: false
         )
     }
 
@@ -177,30 +315,43 @@ final class DetectionEventTracker: @unchecked Sendable {
     private func endActiveEventLocked(
         _ event: InProgressEvent,
         endTime: Date,
-        forcedReason: RejectionReason? = nil
-    ) -> CandidateEvent {
-        activeEvent = nil
-        belowFloorSince = nil
+        forcedReason: DetectionEventRejectionReason? = nil
+    ) -> DetectionCandidateEvent {
+        let rules = Self.eventRules(
+            for: event,
+            threshold: event.threshold,
+            strongPeakThreshold: event.strongPeakThreshold,
+            nearMatchSmoothedThreshold: event.nearMatchSmoothedThreshold
+        )
 
-        let rejection = forcedReason ?? rejectionReason(for: event)
-        let candidate = CandidateEvent(
+        let rejection: DetectionEventRejectionReason?
+        if event.hasFired {
+            rejection = nil
+        } else if let forcedReason {
+            rejection = forcedReason
+        } else if event.cooldownBlocked {
+            rejection = .cooldownActive
+        } else if !rules.qualifies {
+            rejection = .scoreBelowThreshold
+        } else {
+            rejection = .unknown
+        }
+
+        let candidate = DetectionCandidateEvent(
             startTime: event.startTime,
             endTime: endTime,
             maxInstantaneous: event.maxInstantaneous,
             maxSmoothed: event.maxSmoothed,
             maxInstantaneousAt: event.maxInstantaneousAt,
             maxSmoothedAt: event.maxSmoothedAt,
-            strictRulePassed: event.strictRulePassed,
-            nearMatchRulePassed: event.nearMatchRulePassed,
-            fired: event.everFired,
+            strictRulePassed: rules.strictPassed,
+            nearMatchRulePassed: rules.nearMatchPassed,
+            fired: event.hasFired,
             cooldownBlocked: event.cooldownBlocked,
-            rejectionReason: event.everFired ? nil : rejection
+            rejectionReason: rejection
         )
 
-        candidateEventCount += 1
-        if candidate.fired {
-            firedEventCount += 1
-        } else {
+        if !event.hasFired {
             rejectedEventCount += 1
         }
 
@@ -213,47 +364,43 @@ final class DetectionEventTracker: @unchecked Sendable {
         return candidate
     }
 
-    private func updateEventPeaks(_ event: inout InProgressEvent, with observation: Observation) {
-        if observation.instantaneous > event.maxInstantaneous {
-            event.maxInstantaneous = observation.instantaneous
-            event.maxInstantaneousAt = observation.timestamp
+    private func updateEventPeaks(
+        _ event: inout InProgressEvent,
+        timestamp: Date,
+        instantaneous: Double,
+        smoothed: Double
+    ) {
+        event.lastAboveFloorTime = timestamp
+        event.latestInstantaneous = instantaneous
+        event.latestSmoothed = smoothed
+
+        if instantaneous > event.maxInstantaneous {
+            event.maxInstantaneous = instantaneous
+            event.maxInstantaneousAt = timestamp
         }
-        if observation.smoothed > event.maxSmoothed {
-            event.maxSmoothed = observation.smoothed
-            event.maxSmoothedAt = observation.timestamp
+        if smoothed > event.maxSmoothed {
+            event.maxSmoothed = smoothed
+            event.maxSmoothedAt = timestamp
         }
     }
 
-    private func rejectionReason(for event: InProgressEvent) -> RejectionReason {
-        if event.everFired {
-            return .unknown
-        }
+    private static func isAboveFloor(instantaneous: Double, smoothed: Double) -> Bool {
+        instantaneous >= eventFloor || smoothed >= eventFloor
+    }
 
-        if event.cooldownBlocked && (event.strictRulePassed || event.nearMatchRulePassed || event.everQualified) {
-            return .cooldownActive
-        }
+    private static func isBelowFloor(instantaneous: Double, smoothed: Double) -> Bool {
+        instantaneous < eventFloor && smoothed < eventFloor
+    }
 
-        if event.everQualified {
-            return .unknown
-        }
-
-        if !event.strictRulePassed && !event.nearMatchRulePassed {
-            if event.maxInstantaneous < event.strongPeakThreshold
-                && event.maxSmoothed < event.nearMatchSmoothedThreshold
-                && event.maxSmoothed < event.threshold {
-                return .scoreBelowThreshold
-            }
-            if event.maxInstantaneous < event.strongPeakThreshold {
-                return .strongPeakMissing
-            }
-            if event.maxSmoothed < event.nearMatchSmoothedThreshold {
-                return .smoothedScoreTooLow
-            }
-            if event.maxSmoothed < event.threshold {
-                return .scoreBelowThreshold
-            }
-        }
-
-        return .unknown
+    private static func eventRules(
+        for event: InProgressEvent,
+        threshold: Double,
+        strongPeakThreshold: Double,
+        nearMatchSmoothedThreshold: Double
+    ) -> (strictPassed: Bool, nearMatchPassed: Bool, qualifies: Bool) {
+        let strictPassed = event.maxSmoothed >= threshold
+        let nearMatchPassed = event.maxInstantaneous >= strongPeakThreshold
+            && event.maxSmoothed >= nearMatchSmoothedThreshold
+        return (strictPassed, nearMatchPassed, strictPassed || nearMatchPassed)
     }
 }
