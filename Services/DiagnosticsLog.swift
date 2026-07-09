@@ -12,6 +12,10 @@ final class DiagnosticsLog: @unchecked Sendable {
         let instantaneous: Double
         let smoothed: Double
         let threshold: Double
+        let strongPeakThreshold: Double
+        let nearMatchSmoothedThreshold: Double
+        let strictRulePassed: Bool
+        let nearMatchRulePassed: Bool
         let fired: Bool
         let inCooldown: Bool
         let qualifies: Bool
@@ -67,6 +71,10 @@ final class DiagnosticsLog: @unchecked Sendable {
         instantaneous: Double,
         smoothed: Double,
         threshold: Double,
+        strongPeakThreshold: Double,
+        nearMatchSmoothedThreshold: Double,
+        strictRulePassed: Bool,
+        nearMatchRulePassed: Bool,
         fired: Bool,
         inCooldown: Bool,
         qualifies: Bool
@@ -76,6 +84,10 @@ final class DiagnosticsLog: @unchecked Sendable {
             instantaneous: instantaneous,
             smoothed: smoothed,
             threshold: threshold,
+            strongPeakThreshold: strongPeakThreshold,
+            nearMatchSmoothedThreshold: nearMatchSmoothedThreshold,
+            strictRulePassed: strictRulePassed,
+            nearMatchRulePassed: nearMatchRulePassed,
             fired: fired,
             inCooldown: inCooldown,
             qualifies: qualifies
@@ -85,15 +97,18 @@ final class DiagnosticsLog: @unchecked Sendable {
         lastDetectionDecision = decision
         lock.unlock()
 
-        let firedLabel = fired ? "true" : "false"
         log(
             category: "Detection",
             "decision instantaneous=\(formatScore(instantaneous)) "
                 + "smoothed=\(formatScore(smoothed)) "
                 + "threshold=\(formatScore(threshold)) "
+                + "strongPeakThreshold=\(formatScore(strongPeakThreshold)) "
+                + "nearMatchSmoothedThreshold=\(formatScore(nearMatchSmoothedThreshold)) "
+                + "strictRulePassed=\(strictRulePassed) "
+                + "nearMatchRulePassed=\(nearMatchRulePassed) "
                 + "qualifies=\(qualifies) "
                 + "inCooldown=\(inCooldown) "
-                + "fired=\(firedLabel)"
+                + "fired=\(fired)"
         )
     }
 
@@ -196,7 +211,11 @@ final class DiagnosticsLog: @unchecked Sendable {
         Recorded: \(recordedAt)
         Instantaneous score: \(formatScore(decision.instantaneous))
         Smoothed score: \(formatScore(decision.smoothed))
-        Threshold: \(formatScore(decision.threshold))
+        Main threshold: \(formatScore(decision.threshold))
+        Strong peak threshold: \(formatScore(decision.strongPeakThreshold))
+        Near-match smoothed threshold: \(formatScore(decision.nearMatchSmoothedThreshold))
+        Strict rule passed: \(decision.strictRulePassed ? "true" : "false")
+        Near-match rule passed: \(decision.nearMatchRulePassed ? "true" : "false")
         Qualifies: \(decision.qualifies ? "yes" : "no")
         In cooldown: \(decision.inCooldown ? "yes" : "no")
         Fired: \(decision.fired ? "true" : "false")

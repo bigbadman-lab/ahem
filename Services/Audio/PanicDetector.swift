@@ -4,6 +4,10 @@ import Foundation
 final class PanicDetector {
     struct Configuration {
         let threshold: Double
+        /// Instantaneous score floor for the strong-peak near-match firing rule.
+        let strongPeakThreshold: Double
+        /// Smoothed score floor for the strong-peak near-match firing rule.
+        let nearMatchSmoothedThreshold: Double
         let cooldownDuration: TimeInterval
         let windowDuration: TimeInterval
         let analysisInterval: TimeInterval
@@ -15,6 +19,8 @@ final class PanicDetector {
 
         static let `default` = Configuration(
             threshold: 0.78,
+            strongPeakThreshold: 0.79,
+            nearMatchSmoothedThreshold: 0.72,
             cooldownDuration: 2.5,
             windowDuration: 0.75,
             analysisInterval: 0.25,
@@ -166,11 +172,17 @@ final class PanicDetector {
             minimumSimilarity: config.peakSanityMinimumSimilarity
         )
         let passesNoiseFloor = live.rms >= currentNoiseFloor * config.noiseFloorMultiplier
+
+        let strictRulePassed = smoothedConfidence >= config.threshold
+        let nearMatchRulePassed = breakdown.final >= config.strongPeakThreshold
+            && smoothedConfidence >= config.nearMatchSmoothedThreshold
+        let scoreQualifies = strictRulePassed || nearMatchRulePassed
+
         let qualifies = passesPeakSanity
             && passesNoiseFloor
-            && breakdown.final >= config.threshold
+            && scoreQualifies
 
-        if breakdown.final < config.threshold {
+        if !scoreQualifies {
             updateNoiseFloor(with: live.rms)
         }
 
@@ -189,7 +201,11 @@ final class PanicDetector {
             instantaneous: breakdown.final,
             smoothed: smoothedConfidence,
             threshold: config.threshold,
-            fired: fired && qualifies,
+            strongPeakThreshold: config.strongPeakThreshold,
+            nearMatchSmoothedThreshold: config.nearMatchSmoothedThreshold,
+            strictRulePassed: strictRulePassed,
+            nearMatchRulePassed: nearMatchRulePassed,
+            fired: fired,
             inCooldown: inCooldown,
             qualifies: qualifies
         )
