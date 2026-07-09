@@ -190,8 +190,8 @@ final class PanicDetector {
         let frameNearMatchRulePassed = breakdown.final >= config.strongPeakThreshold
             && smoothedConfidence >= config.nearMatchSmoothedThreshold
 
-        let aboveEventFloor = breakdown.final >= DetectionEventEngine.eventFloor
-            || smoothedConfidence >= DetectionEventEngine.eventFloor
+        let aboveEventFloor = breakdown.final >= DetectionEventEngine.scoreObservationFloor
+            || smoothedConfidence >= DetectionEventEngine.scoreObservationFloor
         if !aboveEventFloor {
             updateNoiseFloor(with: live.rms)
         }
@@ -207,7 +207,8 @@ final class PanicDetector {
             passesPeakSanity: passesPeakSanity,
             passesNoiseFloor: passesNoiseFloor,
             inCooldown: inCooldown,
-            detectorActive: detectorActive
+            detectorActive: detectorActive,
+            fingerprintUsable: true
         )
 
         let eventSnapshot = eventResult.snapshot
@@ -225,10 +226,13 @@ final class PanicDetector {
             strictRulePassed: frameStrictRulePassed,
             nearMatchRulePassed: frameNearMatchRulePassed,
             eventActive: eventSnapshot.active,
+            eventAgeMs: eventSnapshot.eventAgeMs,
             eventMaxInstantaneous: eventSnapshot.maxInstantaneous,
             eventMaxSmoothed: eventSnapshot.maxSmoothed,
             eventStrictRulePassed: eventSnapshot.strictRulePassed,
             eventNearMatchRulePassed: eventSnapshot.nearMatchRulePassed,
+            belowEndThreshold: eventSnapshot.belowEndThreshold,
+            forcedEndDueToDuration: eventSnapshot.forcedEndDueToDuration,
             qualifies: eventQualifiesWithGates,
             inCooldown: inCooldown,
             fired: fired,

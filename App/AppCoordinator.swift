@@ -38,6 +38,7 @@ final class AppCoordinator: ObservableObject {
     private let maxQuietSampleRetriesPerSample = 2
     private let trainingCompleteDisplayDuration: TimeInterval = 2.0
     private let panicDetectedDisplayDuration: TimeInterval = 1.0
+    private let minimumTrainingConsistency: Double = DiagnosticsLog.minimumTrainingConsistency
     private let listeningBufferWaitTimeout: TimeInterval = 3.0
     private let postTrainingAudioCleanupDelay: TimeInterval = 0.5
 
@@ -1552,6 +1553,25 @@ final class AppCoordinator: ObservableObject {
 
         do {
             let fingerprint = try panicFingerprintService.combine(samples: collectedSamples)
+            let consistency = fingerprint.trainingConsistency
+
+            DiagnosticsLog.shared.recordTrainingQualityDecision(
+                accepted: consistency >= minimumTrainingConsistency,
+                consistency: consistency,
+                rejectionReason: consistency >= minimumTrainingConsistency ? nil : "consistency_below_quality_threshold"
+            )
+
+            if consistency < minimumTrainingConsistency {
+                let message = "Those sounded a little different. Try one more time with the same clear AHEM each time."
+                #if DEBUG
+                print("[Training] rejected — consistency below quality threshold (consistency=\(String(format: "%.2f", consistency)))")
+                #endif
+                DiagnosticsLog.shared.log(category: "Training", "rejected — consistency below quality threshold (\(String(format: "%.2f", consistency)))")
+
+                failTraining(message)
+                return
+            }
+
             try panicFingerprintStore.save(fingerprint)
             appState.lastTrainedAt = fingerprint.createdAt
             playTrainingConfirmationSoundIfEnabled()

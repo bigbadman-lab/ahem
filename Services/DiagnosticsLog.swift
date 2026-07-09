@@ -7,6 +7,8 @@ import Foundation
 final class DiagnosticsLog: @unchecked Sendable {
     static let shared = DiagnosticsLog()
 
+    static let minimumTrainingConsistency: Double = 0.82
+
     struct LastDetectionDecision: Equatable {
         let recordedAt: Date
         let instantaneous: Double
@@ -45,9 +47,19 @@ final class DiagnosticsLog: @unchecked Sendable {
         candidateEventCount: 0,
         firedEventCount: 0,
         rejectedEventCount: 0,
+        activeEventCount: 0,
         lastCandidateEvent: nil,
         recentCandidateEvents: []
     )
+
+    struct TrainingQualityDecision: Equatable {
+        let recordedAt: Date
+        let accepted: Bool
+        let consistency: Double
+        let rejectionReason: String?
+    }
+
+    private var lastTrainingQualityDecision: TrainingQualityDecision?
 
     private static let lineTimestampFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -86,10 +98,13 @@ final class DiagnosticsLog: @unchecked Sendable {
         strictRulePassed: Bool,
         nearMatchRulePassed: Bool,
         eventActive: Bool,
+        eventAgeMs: Double,
         eventMaxInstantaneous: Double,
         eventMaxSmoothed: Double,
         eventStrictRulePassed: Bool,
         eventNearMatchRulePassed: Bool,
+        belowEndThreshold: Bool,
+        forcedEndDueToDuration: Bool,
         qualifies: Bool,
         inCooldown: Bool,
         fired: Bool,
@@ -124,14 +139,41 @@ final class DiagnosticsLog: @unchecked Sendable {
                 + "strictRulePassed=\(strictRulePassed) "
                 + "nearMatchRulePassed=\(nearMatchRulePassed) "
                 + "eventActive=\(eventActive) "
+                + "eventAgeMs=\(String(format: "%.0f", eventAgeMs)) "
                 + "eventMaxInstantaneous=\(formatScore(eventMaxInstantaneous)) "
                 + "eventMaxSmoothed=\(formatScore(eventMaxSmoothed)) "
                 + "eventStrictRulePassed=\(eventStrictRulePassed) "
                 + "eventNearMatchRulePassed=\(eventNearMatchRulePassed) "
+                + "belowEndThreshold=\(belowEndThreshold) "
+                + "forcedEndDueToDuration=\(forcedEndDueToDuration) "
                 + "qualifies=\(qualifies) "
                 + "inCooldown=\(inCooldown) "
                 + "fired=\(fired)"
         )
+    }
+
+    func recordTrainingQualityDecision(
+        accepted: Bool,
+        consistency: Double,
+        rejectionReason: String?
+    ) {
+        lock.lock()
+        lastTrainingQualityDecision = TrainingQualityDecision(
+            recordedAt: Date(),
+            accepted: accepted,
+            consistency: consistency,
+            rejectionReason: rejectionReason
+        )
+        lock.unlock()
+
+        if accepted {
+            log(category: "TrainingQuality", "accepted — consistency=\(formatScore(consistency))")
+        } else {
+            log(
+                category: "TrainingQuality",
+                "rejected — consistency=\(formatScore(consistency)) reason=\(rejectionReason ?? "unknown")"
+            )
+        }
     }
 
     func updateDetectionEventStatistics(_ statistics: DetectionEventStatistics) {
@@ -169,6 +211,10 @@ final class DiagnosticsLog: @unchecked Sendable {
         lastBrowserHideAttempt = attempt
         lock.unlock()
 
+        if attempt.resultSummary == "not a supported browser" {
+            log(category: "BrowserHiding", "detection fired but frontmost app unsupported — not hiding")
+        }
+
         log(
             category: "BrowserHiding",
             "activeApp=\(attempt.activeAppName) "
@@ -199,6 +245,7 @@ final class DiagnosticsLog: @unchecked Sendable {
         let baseReport = DiagnosticsReportService.makeReport(snapshot: snapshot)
 
         let fingerprintMetadata = fingerprintMetadataSection(fingerprint: fingerprint, snapshot: snapshot)
+        let trainingQuality = trainingQualitySection()
         let detectionSection = lastDetectionSection()
         let eventSection = detectionEventSection()
         let browserHideSection = lastBrowserHideSection()
@@ -208,6 +255,8 @@ final class DiagnosticsLog: @unchecked Sendable {
         \(baseReport)
 
         \(fingerprintMetadata)
+
+        \(trainingQuality)
 
         \(detectionSection)
 
@@ -284,9 +333,19 @@ final class DiagnosticsLog: @unchecked Sendable {
 
         var sections: [String] = [
             """
+            === Detection Event Segmentation (hysteresis) ===
+            eventStartInstantaneousThreshold: \(formatScore(DetectionEventEngine.eventStartInstantaneousThreshold))
+            eventStartSmoothedThreshold: \(formatScore(DetectionEventEngine.eventStartSmoothedThreshold))
+            eventEndInstantaneousThreshold: \(formatScore(DetectionEventEngine.eventEndInstantaneousThreshold))
+            eventEndSmoothedThreshold: \(formatScore(DetectionEventEngine.eventEndSmoothedThreshold))
+            eventEndGraceMs: \(String(format: "%.0f", DetectionEventEngine.eventEndGraceMs))
+            maxEventDurationMs: \(String(format: "%.0f", DetectionEventEngine.maxEventDurationMs))
+            """,
+            """
             === Detection Event Statistics ===
             Highest instantaneous since launch: \(formatScore(stats.highestInstantaneousSinceLaunch))
             Highest smoothed since launch: \(formatScore(stats.highestSmoothedSinceLaunch))
+            Active candidate events: \(stats.activeEventCount)
             Candidate events observed: \(stats.candidateEventCount)
             Fired events: \(stats.firedEventCount)
             Rejected candidate events: \(stats.rejectedEventCount)
@@ -318,6 +377,32 @@ final class DiagnosticsLog: @unchecked Sendable {
         }
 
         return sections.joined(separator: "\n\n")
+    }
+
+    private func trainingQualitySection() -> String {
+        lock.lock()
+        let decision = lastTrainingQualityDecision
+        lock.unlock()
+
+        guard let decision else {
+            return """
+            === Training Quality ===
+            Minimum consistency threshold: \(formatScore(Self.minimumTrainingConsistency))
+            Latest training: (none)
+            """
+        }
+
+        let decisionLabel = decision.accepted ? "accepted" : "rejected"
+        let rejection = decision.rejectionReason ?? "none"
+
+        return """
+        === Training Quality ===
+        Minimum consistency threshold: \(formatScore(Self.minimumTrainingConsistency))
+        Recorded: \(Self.lineTimestampFormatter.string(from: decision.recordedAt))
+        Latest training decision: \(decisionLabel)
+        Consistency: \(formatScore(decision.consistency))
+        Rejection reason: \(rejection)
+        """
     }
 
     private func candidateEventSummary(
@@ -359,6 +444,7 @@ final class DiagnosticsLog: @unchecked Sendable {
         Active app: \(attempt.activeAppName)
         Bundle ID: \(attempt.bundleIdentifier)
         Matched supported browser: \(attempt.matchedSupportedBrowser ? "yes" : "no")
+        Detection fired but browser not hidden because frontmost app was unsupported: \(attempt.resultSummary == "not a supported browser" ? "yes" : "no")
         Hide command attempted: \(attempt.hideCommandAttempted ? "yes" : "no")
         hide() returned true: \(attempt.hideCommandReturnedTrue.map { $0 ? "yes" : "no" } ?? "n/a")
         Hide succeeded: \(attempt.hideSucceeded.map { $0 ? "yes" : "no" } ?? "n/a")
