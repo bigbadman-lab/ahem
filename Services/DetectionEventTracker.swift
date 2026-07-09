@@ -1,7 +1,5 @@
 import Foundation
 
-// TEMP: Release diagnostics — remove when Debug vs Release comparison is complete.
-
 enum DetectionEventRejectionReason: String, Equatable {
     case scoreBelowThreshold = "score_below_threshold"
     case cooldownActive = "cooldown_active"

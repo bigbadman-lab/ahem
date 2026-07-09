@@ -232,8 +232,6 @@ final class AppState: ObservableObject {
     @Published var trainingUIPhase: TrainingUIPhase = .idle
     @Published var trainingInputLevel: Double = 0
     @Published var lastTrainedAt: Date?
-    // TEMP: Release diagnostics — remove when Debug vs Release comparison is complete.
-    @Published var diagnosticsCopyConfirmation: String?
     /// One-shot launch request to open setup UI; cleared after presentation.
     @Published var setupPresentationRequest: SetupPresentationRequest?
 }

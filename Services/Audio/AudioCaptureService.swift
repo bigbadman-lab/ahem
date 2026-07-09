@@ -358,7 +358,6 @@ final class AudioCaptureService {
         }
 
         print("[AudioLifecycle] startCapture requested — generation=\(generation)")
-        DiagnosticsLog.shared.log(category: "Audio", "startCapture requested — generation=\(generation)")
 
         #if DEBUG
         print("[AudioCapture] Creating AVAudioEngine (permission granted path)")
@@ -506,7 +505,6 @@ final class AudioCaptureService {
     /// Idempotent: safe to call repeatedly; always invalidates live generation and tears down engine state.
     func stopCapture(reason: String = "unspecified") {
         print("[AudioLifecycle] stopCapture requested — reason=\(reason)")
-        DiagnosticsLog.shared.log(category: "Audio", "stopCapture requested — reason=\(reason)")
 
         let continuationToResume = captureStateLock.withLock { () -> CheckedContinuation<Bool, Never>? in
             captureSessionActive = false

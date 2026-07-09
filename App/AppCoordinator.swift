@@ -38,7 +38,7 @@ final class AppCoordinator: ObservableObject {
     private let maxQuietSampleRetriesPerSample = 2
     private let trainingCompleteDisplayDuration: TimeInterval = 2.0
     private let panicDetectedDisplayDuration: TimeInterval = 1.0
-    private let minimumTrainingConsistency: Double = DiagnosticsLog.minimumTrainingConsistency
+    private let minimumTrainingConsistency: Double = 0.82
     private let listeningBufferWaitTimeout: TimeInterval = 3.0
     private let postTrainingAudioCleanupDelay: TimeInterval = 0.5
 
@@ -62,7 +62,6 @@ final class AppCoordinator: ObservableObject {
         #if DEBUG
         print("[Startup] AppCoordinator init")
         #endif
-        DiagnosticsLog.shared.log(category: "Startup", "AppCoordinator initialized")
 
         audioPipeline.onTrainingBuffer = { [weak self] buffer in
             Task { @MainActor in
@@ -131,10 +130,6 @@ final class AppCoordinator: ObservableObject {
         }
 
         AppStateMachine.logTransition(from: current, to: newStatus, reason: reason)
-        DiagnosticsLog.shared.log(
-            category: "StateMachine",
-            "transition \(DiagnosticsReportService.appStatusLabel(current)) → \(DiagnosticsReportService.appStatusLabel(newStatus)) — \(reason)"
-        )
         appState.status = newStatus
         handleStatusSideEffects(from: current, to: newStatus)
         return true
@@ -327,7 +322,6 @@ final class AppCoordinator: ObservableObject {
                 #if DEBUG
                 print("[Onboarding] Setup complete — onboarding not needed")
                 #endif
-                DiagnosticsLog.shared.log(category: "Onboarding", "skipped — fingerprint exists, permission granted")
                 if !onboardingStore.hasCompletedOnboarding {
                     onboardingStore.markCompleted()
                 }
@@ -337,7 +331,6 @@ final class AppCoordinator: ObservableObject {
             #if DEBUG
             print("[Onboarding] Permission granted but no fingerprint — presenting setup UI")
             #endif
-            DiagnosticsLog.shared.log(category: "Onboarding", "shown — permission granted, no fingerprint")
             if onboardingStore.hasCompletedOnboarding {
                 prepareTrainingUI()
                 appState.setupPresentationRequest = .training
@@ -350,10 +343,6 @@ final class AppCoordinator: ObservableObject {
             #if DEBUG
             print("[Onboarding] Permission not granted — presenting onboarding")
             #endif
-            DiagnosticsLog.shared.log(
-                category: "Onboarding",
-                "shown — permission=\(permission), hasFingerprint=\(hasFingerprint)"
-            )
             prepareOnboarding()
             appState.setupPresentationRequest = .onboarding
         }
@@ -799,10 +788,6 @@ final class AppCoordinator: ObservableObject {
             } else {
                 print("[Startup] ready")
             }
-            DiagnosticsLog.shared.log(
-                category: "Startup",
-                "listening ready — status=listening, detectorAttached=\(panicDetector != nil), captureActive=\(audioCaptureService.isCapturing)"
-            )
         } catch {
             clearDetectionForListeningRestart()
             audioCaptureService.stopCapture(reason: "listening startup failed")
@@ -819,10 +804,6 @@ final class AppCoordinator: ObservableObject {
     @discardableResult
     private func startCaptureOrThrow() throws -> UInt64 {
         let captureGeneration = try audioCaptureService.startCapture()
-        DiagnosticsLog.shared.log(
-            category: "Audio",
-            "capture started — generation=\(captureGeneration), active=\(audioCaptureService.isCapturing)"
-        )
 
         let snapshot = audioCaptureService.captureActivitySnapshot()
         #if DEBUG
@@ -880,14 +861,8 @@ final class AppCoordinator: ObservableObject {
             #if DEBUG
             print("[Detection] attachDetection aborted — no stored fingerprint")
             #endif
-            DiagnosticsLog.shared.log(category: "Detection", "attach aborted — no stored fingerprint")
             return false
         }
-
-        DiagnosticsLog.shared.log(
-            category: "Fingerprint",
-            "loaded for detection — v\(fingerprint.version), sampleRate=\(String(format: "%.0f", fingerprint.processingSampleRate))Hz"
-        )
 
         appState.lastTrainedAt = fingerprint.createdAt
 
@@ -917,13 +892,6 @@ final class AppCoordinator: ObservableObject {
         panicDetector = detector
         audioPipeline.setDetector(detector)
 
-        DiagnosticsLog.shared.log(
-            category: "Detection",
-            "configured and started — threshold=\(String(format: "%.2f", PanicDetector.Configuration.default.threshold)), "
-                + "sampleRate=\(String(format: "%.0f", sampleRate)), "
-                + "fingerprint v\(fingerprint.version)"
-        )
-
         #if DEBUG
         let hardwareRate = audioCaptureService.hardwareSampleRate ?? 0
         print(
@@ -938,86 +906,9 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func clearDetectionForListeningRestart() {
-        if panicDetector != nil {
-            DiagnosticsLog.shared.log(category: "Detection", "stopped — listening restart")
-        }
         panicDetector?.stop()
         panicDetector = nil
         audioPipeline.setDetector(nil)
-    }
-
-    // TEMP: Release diagnostics — remove when Debug vs Release comparison is complete.
-    func copyDiagnosticsToClipboard() {
-        DiagnosticsLog.shared.log(category: "Diagnostics", "Copy Diagnostics requested from menu")
-        let snapshot = makeDiagnosticsSnapshot()
-        DiagnosticsLog.shared.copyReportToClipboard(
-            snapshot: snapshot,
-            fingerprint: panicFingerprintStore.load()
-        )
-
-        appState.diagnosticsCopyConfirmation = "Diagnostics copied to clipboard."
-
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            guard let self else { return }
-            if self.appState.diagnosticsCopyConfirmation == "Diagnostics copied to clipboard." {
-                self.appState.diagnosticsCopyConfirmation = nil
-            }
-        }
-
-        #if DEBUG
-        print("[Diagnostics] Copied diagnostics report to clipboard")
-        #endif
-    }
-
-    private func makeDiagnosticsSnapshot() -> DiagnosticsSnapshot {
-        let bundle = Bundle.main
-        let info = bundle.infoDictionary
-        let bundlePath = bundle.bundlePath
-        let entitlements = DiagnosticsReportService.currentProcessEntitlements()
-        let fingerprint = panicFingerprintStore.load()
-        let frontmost = NSWorkspace.shared.frontmostApplication
-        let frontmostBundleID = frontmost?.bundleIdentifier ?? "none"
-        let frontmostName = frontmost?.localizedName ?? "none"
-
-        return DiagnosticsSnapshot(
-            appVersion: info?["CFBundleShortVersionString"] as? String ?? "unknown",
-            buildNumber: info?["CFBundleVersion"] as? String ?? "unknown",
-            bundleIdentifier: bundle.bundleIdentifier ?? "unknown",
-            executablePath: bundle.executablePath ?? "unknown",
-            bundlePath: bundlePath,
-            installLocation: DiagnosticsReportService.installLocationLabel(bundlePath: bundlePath),
-            buildConfiguration: DiagnosticsReportService.buildConfigurationLabel(),
-            entitlementAudioInput: DiagnosticsReportService.entitlementValue(
-                entitlements,
-                key: "com.apple.security.device.audio-input"
-            ),
-            entitlementAppSandbox: DiagnosticsReportService.entitlementValue(
-                entitlements,
-                key: "com.apple.security.app-sandbox"
-            ),
-            entitlementGetTaskAllow: DiagnosticsReportService.entitlementValue(
-                entitlements,
-                key: "com.apple.security.get-task-allow"
-            ),
-            microphonePermission: DiagnosticsReportService.microphonePermissionLabel(),
-            microphoneUsageDescriptionPresent: info?["NSMicrophoneUsageDescription"] != nil,
-            microphoneUsageDescription: info?["NSMicrophoneUsageDescription"] as? String,
-            fingerprintStored: panicFingerprintStore.hasStoredData,
-            fingerprintVersion: fingerprint.map { String($0.version) } ?? "n/a",
-            fingerprintConsistency: fingerprint.map {
-                String(format: "%.2f", $0.trainingConsistency)
-            } ?? "n/a",
-            appStatus: DiagnosticsReportService.appStatusLabel(appState.status),
-            audioCaptureActive: audioCaptureService.isCapturing,
-            panicDetectorAttached: panicDetector != nil,
-            detectionPaused: appState.status == .paused,
-            frontmostAppName: frontmostName,
-            frontmostAppBundleID: frontmostBundleID,
-            frontmostIsSupportedBrowser: BrowserHidingService.supportedBrowserBundleIDs
-                .contains(frontmostBundleID),
-            supportedBrowserBundleIDs: BrowserHidingService.supportedBrowserBundleIDs.sorted()
-        )
     }
 
     func requestMicrophonePermission() {
@@ -1055,8 +946,6 @@ final class AppCoordinator: ObservableObject {
 
         NSApplication.shared.setActivationPolicy(.accessory)
 
-        DiagnosticsLog.shared.log(category: "Startup", "app launch started (accessory / menu bar mode)")
-
         #if DEBUG
         print("[Startup] App launch started (accessory / menu bar mode)")
         #endif
@@ -1078,10 +967,6 @@ final class AppCoordinator: ObservableObject {
         print(
             "[StateMachine] launch derived state — "
                 + "fingerprintExists=\(hasFingerprint), micPermission=\(permission)"
-        )
-        DiagnosticsLog.shared.log(
-            category: "Startup",
-            "launch derived state — fingerprintExists=\(hasFingerprint), micPermission=\(permission)"
         )
 
         appState.onboardingPhase = .idle
@@ -1109,7 +994,6 @@ final class AppCoordinator: ObservableObject {
             return
         }
 
-        DiagnosticsLog.shared.log(category: "Training", "started — user requested training")
         trainingAwaitingUserConfirmation = false
         explicitTrainingStartInProgress = true
         Task { [weak self] in
@@ -1158,7 +1042,6 @@ final class AppCoordinator: ObservableObject {
         guard !isTraining else { return }
 
         print("[Training] explicit training started")
-        DiagnosticsLog.shared.log(category: "Training", "session began — explicit user training start")
         explicitTrainingStartInProgress = false
 
         cancelListeningStartup()
@@ -1223,11 +1106,6 @@ final class AppCoordinator: ObservableObject {
         callSite: String
     ) async -> MicrophonePermissionStatus {
         let initial = AudioCaptureService.currentPermissionStatus()
-        DiagnosticsLog.shared.log(
-            category: "Permission",
-            "ensureMicrophonePermission callSite=\(callSite) initial=\(initial) "
-                + "requestIfNeeded=\(requestIfNeeded)"
-        )
         #if DEBUG
         print(
             "[Permission] ensureMicrophonePermission callSite=\(callSite) "
@@ -1306,7 +1184,6 @@ final class AppCoordinator: ObservableObject {
     }
 
     func quit() {
-        DiagnosticsLog.shared.log(category: "Startup", "app quit requested")
         trainingTask?.cancel()
         detectionResetTask?.cancel()
         trainingTask = nil
@@ -1358,10 +1235,6 @@ final class AppCoordinator: ObservableObject {
     }
 
     private func handlePanicDetected(confidence: Double) {
-        DiagnosticsLog.shared.log(
-            category: "Detection",
-            "trigger callback received — confidence=\(String(format: "%.2f", confidence)), status=\(DiagnosticsReportService.appStatusLabel(appState.status))"
-        )
 
         #if DEBUG
         let hideAllowed = appState.status == .listening || appState.status == .panicDetected
@@ -1375,17 +1248,11 @@ final class AppCoordinator: ObservableObject {
         #endif
 
         guard appState.status == .listening || appState.status == .panicDetected else {
-            DiagnosticsLog.shared.log(
-                category: "Detection",
-                "trigger callback suppressed — status does not allow browser hiding"
-            )
             #if DEBUG
             print("[Panic] Hide suppressed — app status does not allow browser hiding")
             #endif
             return
         }
-
-        DiagnosticsLog.shared.log(category: "BrowserHiding", "hide requested — proceeding from detection trigger")
 
         #if DEBUG
         print("[Panic] Proceeding with browser hide")
@@ -1410,25 +1277,6 @@ final class AppCoordinator: ObservableObject {
     private func logBrowserHidingResult(_ result: BrowserHidingResult) {
         switch result {
         case .hidden(let bundleIdentifier, let localizedName, let confirmation):
-            let confirmationLabel: String
-            switch confirmation {
-            case .hideReturnedTrue:
-                confirmationLabel = "hide() returned true"
-            case .isHiddenVerified:
-                confirmationLabel = "verified via isHidden"
-            }
-            DiagnosticsLog.shared.recordBrowserHideAttempt(
-                DiagnosticsLog.LastBrowserHideAttempt(
-                    recordedAt: Date(),
-                    activeAppName: localizedName,
-                    bundleIdentifier: bundleIdentifier,
-                    matchedSupportedBrowser: true,
-                    hideCommandAttempted: true,
-                    hideCommandReturnedTrue: confirmation == .hideReturnedTrue,
-                    hideSucceeded: true,
-                    resultSummary: "hidden (\(confirmationLabel))"
-                )
-            )
             #if DEBUG
             switch confirmation {
             case .hideReturnedTrue:
@@ -1438,50 +1286,14 @@ final class AppCoordinator: ObservableObject {
             }
             #endif
         case .notBrowser(let bundleIdentifier, let localizedName):
-            DiagnosticsLog.shared.recordBrowserHideAttempt(
-                DiagnosticsLog.LastBrowserHideAttempt(
-                    recordedAt: Date(),
-                    activeAppName: localizedName,
-                    bundleIdentifier: bundleIdentifier,
-                    matchedSupportedBrowser: false,
-                    hideCommandAttempted: false,
-                    hideCommandReturnedTrue: nil,
-                    hideSucceeded: nil,
-                    resultSummary: "not a supported browser"
-                )
-            )
             #if DEBUG
             print("[BrowserHiding] Frontmost app is not a supported browser: \(localizedName) (\(bundleIdentifier))")
             #endif
         case .noFrontmostApplication:
-            DiagnosticsLog.shared.recordBrowserHideAttempt(
-                DiagnosticsLog.LastBrowserHideAttempt(
-                    recordedAt: Date(),
-                    activeAppName: "none",
-                    bundleIdentifier: "none",
-                    matchedSupportedBrowser: false,
-                    hideCommandAttempted: false,
-                    hideCommandReturnedTrue: nil,
-                    hideSucceeded: nil,
-                    resultSummary: "no frontmost application"
-                )
-            )
             #if DEBUG
             print("[BrowserHiding] No frontmost application")
             #endif
         case .failed(let bundleIdentifier, let localizedName):
-            DiagnosticsLog.shared.recordBrowserHideAttempt(
-                DiagnosticsLog.LastBrowserHideAttempt(
-                    recordedAt: Date(),
-                    activeAppName: localizedName,
-                    bundleIdentifier: bundleIdentifier,
-                    matchedSupportedBrowser: true,
-                    hideCommandAttempted: true,
-                    hideCommandReturnedTrue: false,
-                    hideSucceeded: false,
-                    resultSummary: "hide command failed — browser still visible"
-                )
-            )
             #if DEBUG
             print("[BrowserHiding] Failed to hide browser: \(localizedName) (\(bundleIdentifier))")
             #endif
@@ -1533,7 +1345,6 @@ final class AppCoordinator: ObservableObject {
             #if DEBUG
             print("[Training] Sample \(sampleIndex)/3 started")
             #endif
-            DiagnosticsLog.shared.log(category: "Training", "sample \(sampleIndex)/3 started")
 
             guard let features = await captureAcceptedSample(
                 sampleRate: sampleRate,
@@ -1555,18 +1366,11 @@ final class AppCoordinator: ObservableObject {
             let fingerprint = try panicFingerprintService.combine(samples: collectedSamples)
             let consistency = fingerprint.trainingConsistency
 
-            DiagnosticsLog.shared.recordTrainingQualityDecision(
-                accepted: consistency >= minimumTrainingConsistency,
-                consistency: consistency,
-                rejectionReason: consistency >= minimumTrainingConsistency ? nil : "consistency_below_quality_threshold"
-            )
-
             if consistency < minimumTrainingConsistency {
                 let message = "Those sounded a little different. Try one more time with the same clear AHEM each time."
                 #if DEBUG
                 print("[Training] rejected — consistency below quality threshold (consistency=\(String(format: "%.2f", consistency)))")
                 #endif
-                DiagnosticsLog.shared.log(category: "Training", "rejected — consistency below quality threshold (\(String(format: "%.2f", consistency)))")
 
                 failTraining(message)
                 return
@@ -1578,11 +1382,6 @@ final class AppCoordinator: ObservableObject {
 
             print("[Training] sample 3 complete")
             print("[Training] fingerprint saved")
-            DiagnosticsLog.shared.log(
-                category: "Fingerprint",
-                "saved — v\(fingerprint.version), sampleRate=\(String(format: "%.0f", fingerprint.processingSampleRate))Hz, "
-                    + "samples=\(fingerprint.sampleCount)"
-            )
 
             completeSampleCollectionAwaitingConfirmation(
                 onboardingCompletion: isOnboardingSessionActive
@@ -1602,7 +1401,6 @@ final class AppCoordinator: ObservableObject {
         activeSampleCapture = nil
         audioPipeline.setSampleCollector(nil)
         audioCaptureService.stopCapture(reason: "training collection complete — awaiting confirmation")
-        DiagnosticsLog.shared.log(category: "Audio", "capture stopped — training collection complete, awaiting confirmation")
 
         trainingAwaitingUserConfirmation = true
         isTraining = false
@@ -1681,7 +1479,6 @@ final class AppCoordinator: ObservableObject {
                     #if DEBUG
                     print("[Training] Sample \(sampleIndex)/3 accepted")
                     #endif
-                    DiagnosticsLog.shared.log(category: "Training", "sample \(sampleIndex)/3 completed and accepted")
                     return features
                 }
 
@@ -1729,7 +1526,6 @@ final class AppCoordinator: ObservableObject {
         )
         print("[Training] Sample recording began (sample \(sampleIndex)/3)")
         #endif
-        DiagnosticsLog.shared.log(category: "Training", "sample \(sampleIndex)/3 recording began")
 
         let bridge = SampleCaptureBridge()
         activeSampleCapture = bridge
@@ -1759,7 +1555,6 @@ final class AppCoordinator: ObservableObject {
         #if DEBUG
         print("[Training] Sample recording finished (sample \(sampleIndex)/3)")
         #endif
-        DiagnosticsLog.shared.log(category: "Training", "sample \(sampleIndex)/3 recording finished")
         resetTrainingInputLevel()
 
         guard !capturedFrames.isEmpty else { return .captureFailed }

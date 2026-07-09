@@ -86,11 +86,6 @@ final class PanicDetector {
         noiseFloorHistory.removeAll(keepingCapacity: true)
         eventEngine.reset()
 
-        DiagnosticsLog.shared.log(
-            category: "Detection",
-            "started — v\(fingerprint.version), threshold=\(config.threshold), sampleRate=\(String(format: "%.0f", sampleRate))"
-        )
-
         #if DEBUG
         print(
             "[Detection] Detection resumed "
@@ -125,11 +120,7 @@ final class PanicDetector {
 
         windowToReset?.reset()
 
-        if let endedEvent = eventEngine.finalizeActiveEvent(reason: .detectionPaused) {
-            DiagnosticsLog.shared.recordDetectionEventEnded(endedEvent)
-        }
-        DiagnosticsLog.shared.updateDetectionEventStatistics(eventEngine.statistics())
-        DiagnosticsLog.shared.log(category: "Detection", "stopped")
+        _ = eventEngine.finalizeActiveEvent(reason: .detectionPaused)
 
         #if DEBUG
         print("[Detection] Detection paused")
@@ -186,11 +177,6 @@ final class PanicDetector {
         )
         let passesNoiseFloor = live.rms >= currentNoiseFloor * config.noiseFloorMultiplier
 
-        let frameStrictRulePassed = smoothedConfidence >= config.threshold
-        let frameNearMatchRulePassed = breakdown.final >= config.strongPeakThreshold
-            && smoothedConfidence >= config.nearMatchSmoothedThreshold
-        let framePeakFingerprintRulePassed = breakdown.final >= DetectionEventEngine.peakFingerprintThreshold
-
         let aboveEventFloor = breakdown.final >= DetectionEventEngine.scoreObservationFloor
             || smoothedConfidence >= DetectionEventEngine.scoreObservationFloor
         if !aboveEventFloor {
@@ -218,36 +204,6 @@ final class PanicDetector {
             && passesNoiseFloor
         let fired = eventResult.shouldFire
 
-        DiagnosticsLog.shared.recordDetectionDecision(
-            instantaneous: breakdown.final,
-            smoothed: smoothedConfidence,
-            threshold: config.threshold,
-            strongPeakThreshold: config.strongPeakThreshold,
-            nearMatchSmoothedThreshold: config.nearMatchSmoothedThreshold,
-            peakFingerprintThreshold: DetectionEventEngine.peakFingerprintThreshold,
-            strictRulePassed: frameStrictRulePassed,
-            nearMatchRulePassed: frameNearMatchRulePassed,
-            peakFingerprintRulePassed: framePeakFingerprintRulePassed,
-            eventActive: eventSnapshot.active,
-            eventAgeMs: eventSnapshot.eventAgeMs,
-            eventMaxInstantaneous: eventSnapshot.maxInstantaneous,
-            eventMaxSmoothed: eventSnapshot.maxSmoothed,
-            eventStrictRulePassed: eventSnapshot.strictRulePassed,
-            eventNearMatchRulePassed: eventSnapshot.nearMatchRulePassed,
-            eventPeakFingerprintRulePassed: eventSnapshot.eventPeakFingerprintRulePassed,
-            eventAlreadyFired: eventSnapshot.eventAlreadyFired,
-            belowEndThreshold: eventSnapshot.belowEndThreshold,
-            forcedEndDueToDuration: eventSnapshot.forcedEndDueToDuration,
-            qualifies: eventQualifiesWithGates,
-            inCooldown: inCooldown,
-            fired: fired,
-            eventStatistics: eventEngine.statistics()
-        )
-
-        if let endedEvent = eventResult.endedEvent {
-            DiagnosticsLog.shared.recordDetectionEventEnded(endedEvent)
-        }
-
         logAnalysisIfNeeded(
             breakdown: breakdown,
             smoothed: smoothedConfidence,
@@ -260,16 +216,6 @@ final class PanicDetector {
         )
 
         if inCooldown, eventQualifiesWithGates, !fired {
-            DiagnosticsLog.shared.log(
-                category: "Detection",
-                "cooldown active — suppressing event match "
-                    + formatDetectionSummary(
-                        breakdown: breakdown,
-                        smoothed: smoothedConfidence,
-                        threshold: config.threshold,
-                        fired: false
-                    )
-            )
             #if DEBUG
             print(
                 "[Detection] Cooldown active — suppressing event match "
@@ -316,19 +262,6 @@ final class PanicDetector {
                 + " eventMaxSmoothed=\(formatConfidence(eventSnapshot.maxSmoothed))"
         )
         #endif
-
-        DiagnosticsLog.shared.log(
-            category: "Detection",
-            "event emitted via \(ruleLabel) (firedVia=\(firedVia.rawValue)) "
-                + formatDetectionSummary(
-                    breakdown: breakdown,
-                    smoothed: smoothedConfidence,
-                    threshold: config.threshold,
-                    fired: true
-                )
-                + " eventMaxInstantaneous=\(formatConfidence(eventSnapshot.maxInstantaneous))"
-                + " eventMaxSmoothed=\(formatConfidence(eventSnapshot.maxSmoothed))"
-        )
 
         let result = PanicDetectionResult(
             confidence: breakdown.final,
