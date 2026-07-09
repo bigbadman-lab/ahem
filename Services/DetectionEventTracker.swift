@@ -204,7 +204,7 @@ final class DetectionEventEngine: @unchecked Sendable {
             var endedEvent: DetectionCandidateEvent?
             var snapshotForcedEnd = false
             var snapshotActive = true
-            var snapshotAgeMs = ageMs
+            let snapshotAgeMs = ageMs
 
             if forcedEndDueToDuration {
                 endedEvent = endActiveEventLocked(
