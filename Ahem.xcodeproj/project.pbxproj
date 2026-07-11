@@ -37,6 +37,8 @@
 		A1B2C3D4010000000000001C /* OnboardingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000001C /* OnboardingStore.swift */; };
 		A1B2C3D40100000000000022 /* DetectionEventTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000022 /* DetectionEventTracker.swift */; };
 		A1B2C3D4010000000000001F /* AhemWindowActivation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4020000000000001F /* AhemWindowActivation.swift */; };
+		A1B2C3D40100000000000023 /* DetectionConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000023 /* DetectionConfigurationTests.swift */; };
+		A1B2C3D40100000000000024 /* DetectionRollingWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D40200000000000024 /* DetectionRollingWindowTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -71,10 +73,30 @@
 		A1B2C3D4020000000000001D /* Ahem.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Ahem.entitlements; sourceTree = "<group>"; };
 		A1B2C3D40200000000000022 /* DetectionEventTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetectionEventTracker.swift; sourceTree = "<group>"; };
 		A1B2C3D4020000000000001F /* AhemWindowActivation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AhemWindowActivation.swift; sourceTree = "<group>"; };
+		A1B2C3D40200000000000023 /* DetectionConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetectionConfigurationTests.swift; sourceTree = "<group>"; };
+		A1B2C3D40200000000000024 /* DetectionRollingWindowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetectionRollingWindowTests.swift; sourceTree = "<group>"; };
 		A1B2C3D40300000000000001 /* Ahem.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ahem.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B2C3D40300000000000002 /* AhemTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AhemTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXContainerItemProxy section */
+		A1B2C3D40B00000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1B2C3D40900000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1B2C3D40600000000000001;
+			remoteInfo = Ahem;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFrameworksBuildPhase section */
+		A1B2C3D40400000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A1B2C3D40400000000000001 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -95,6 +117,7 @@
 				A1B2C3D40500000000000006 /* Utilities */,
 				A1B2C3D40200000000000018 /* Assets.xcassets */,
 				A1B2C3D4020000000000001D /* Ahem.entitlements */,
+				A1B2C3D4050000000000000F /* AhemTests */,
 				A1B2C3D40500000000000008 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -160,8 +183,18 @@
 			isa = PBXGroup;
 			children = (
 				A1B2C3D40300000000000001 /* Ahem.app */,
+				A1B2C3D40300000000000002 /* AhemTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4050000000000000F /* AhemTests */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D40200000000000023 /* DetectionConfigurationTests.swift */,
+				A1B2C3D40200000000000024 /* DetectionRollingWindowTests.swift */,
+			);
+			path = AhemTests;
 			sourceTree = "<group>";
 		};
 		A1B2C3D40500000000000009 /* MenuBar */ = {
@@ -239,6 +272,23 @@
 			productReference = A1B2C3D40300000000000001 /* Ahem.app */;
 			productType = "com.apple.product-type.application";
 		};
+		A1B2C3D40600000000000002 /* AhemTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C3D40800000000000004 /* Build configuration list for PBXNativeTarget "AhemTests" */;
+			buildPhases = (
+				A1B2C3D40700000000000003 /* Sources */,
+				A1B2C3D40400000000000002 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A1B2C3D40C00000000000001 /* PBXTargetDependency */,
+			);
+			name = AhemTests;
+			productName = AhemTests;
+			productReference = A1B2C3D40300000000000002 /* AhemTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -251,6 +301,10 @@
 				TargetAttributes = {
 					A1B2C3D40600000000000001 = {
 						CreatedOnToolsVersion = 15.0;
+					};
+					A1B2C3D40600000000000002 = {
+						CreatedOnToolsVersion = 15.0;
+						TestTargetID = A1B2C3D40600000000000001;
 					};
 				};
 			};
@@ -268,6 +322,7 @@
 			projectRoot = "";
 			targets = (
 				A1B2C3D40600000000000001 /* Ahem */,
+				A1B2C3D40600000000000002 /* AhemTests */,
 			);
 		};
 /* End PBXProject section */
@@ -321,6 +376,26 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1B2C3D40700000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1B2C3D40100000000000023 /* DetectionConfigurationTests.swift in Sources */,
+				A1B2C3D40100000000000024 /* DetectionRollingWindowTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A1B2C3D40C00000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1B2C3D40600000000000001 /* Ahem */;
+			targetProxy = A1B2C3D40B00000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A1B2C3D40A00000000000001 /* Debug */ = {
@@ -452,6 +527,24 @@
 			};
 			name = Debug;
 		};
+		A1B2C3D40A00000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = PVABHDRDF3;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.getahem.AhemTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Ahem.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Ahem";
+			};
+			name = Debug;
+		};
 		A1B2C3D40A00000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -482,6 +575,24 @@
 			};
 			name = Release;
 		};
+		A1B2C3D40A00000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = PVABHDRDF3;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.getahem.AhemTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Ahem.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Ahem";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -499,6 +610,15 @@
 			buildConfigurations = (
 				A1B2C3D40A00000000000003 /* Debug */,
 				A1B2C3D40A00000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1B2C3D40800000000000004 /* Build configuration list for PBXNativeTarget "AhemTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3D40A00000000000005 /* Debug */,
+				A1B2C3D40A00000000000006 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

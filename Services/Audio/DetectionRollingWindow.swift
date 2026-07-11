@@ -10,7 +10,9 @@ final class DetectionRollingWindow {
     private let onFeatures: (SampleFeatures) -> Void
 
     private var frames: [Float] = []
-    private var lastAnalysisTime: CFAbsoluteTime = 0
+    /// Cumulative received samples; converted to audio time via `sampleRate` for hop scheduling.
+    private var totalFramesReceived: Int = 0
+    private var lastAnalysisAudioTime: TimeInterval = 0
 
     init(
         sampleRate: Double,
@@ -43,7 +45,8 @@ final class DetectionRollingWindow {
         lock.lock()
         defer { lock.unlock() }
         frames.removeAll(keepingCapacity: true)
-        lastAnalysisTime = 0
+        totalFramesReceived = 0
+        lastAnalysisAudioTime = 0
     }
 
     private func captureAnalysisFrames(from buffer: AVAudioPCMBuffer) -> [Float]? {
@@ -61,11 +64,13 @@ final class DetectionRollingWindow {
             frames.removeFirst(frames.count - maxFrameCount)
         }
 
-        let now = CFAbsoluteTimeGetCurrent()
-        guard now - lastAnalysisTime >= analysisInterval else { return nil }
+        totalFramesReceived += frameLength
+        let audioTime = Double(totalFramesReceived) / sampleRate
+
+        guard audioTime - lastAnalysisAudioTime >= analysisInterval else { return nil }
         guard frames.count >= minFrameCount else { return nil }
 
-        lastAnalysisTime = now
+        lastAnalysisAudioTime = audioTime
         return frames
     }
 }

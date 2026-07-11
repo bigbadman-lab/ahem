@@ -17,13 +17,16 @@ final class PanicDetector {
         let noiseFloorMultiplier: Double
         let noiseFloorHistorySize: Int
 
+        static let defaultAnalysisIntervalSeconds: TimeInterval = 0.125
+        /// At 16 kHz processing, `defaultAnalysisIntervalSeconds` equals 2,000 samples per hop.
+
         static let `default` = Configuration(
             threshold: 0.78,
             strongPeakThreshold: 0.79,
             nearMatchSmoothedThreshold: 0.72,
             cooldownDuration: 2.5,
             windowDuration: 0.75,
-            analysisInterval: 0.25,
+            analysisInterval: defaultAnalysisIntervalSeconds,
             confidenceLogInterval: 3.0,
             confidenceHistorySize: 4,
             peakSanityMinimumSimilarity: 0.40,
@@ -87,6 +90,11 @@ final class PanicDetector {
         eventEngine.reset()
 
         #if DEBUG
+        let analysisIntervalMs = Int(config.analysisInterval * 1000)
+        let rollingWindowMs = Int(config.windowDuration * 1000)
+        print("[Detection] Analysis interval: \(analysisIntervalMs) ms")
+        print("[Detection] Rolling window: \(rollingWindowMs) ms")
+        print("[Detection] Threshold: \(String(format: "%.2f", config.threshold))")
         print(
             "[Detection] Detection resumed "
                 + "(version: \(fingerprint.version), "
@@ -250,6 +258,11 @@ final class PanicDetector {
         }
 
         #if DEBUG
+        let analysisIntervalMs = Int(config.analysisInterval * 1000)
+        print("[Detection] Fired")
+        print("score: \(String(format: "%.3f", breakdown.final))")
+        print("threshold: \(String(format: "%.3f", config.threshold))")
+        print("analysisIntervalMs: \(analysisIntervalMs)")
         print(
             "[Detection] Detection event emitted via \(ruleLabel) (firedVia=\(firedVia.rawValue)) "
                 + formatDetectionSummary(
